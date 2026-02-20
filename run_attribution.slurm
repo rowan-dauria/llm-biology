@@ -56,6 +56,7 @@ source /home/rd761/miniconda3/bin/activate
 
 conda activate qwen-sae
 
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
 export PYTHONPATH="/home/rd761/circuit-tracer:${PYTHONPATH:-}"
 
 srun python -u /home/rd761/llm-biology/generate_attribution_graph.py
