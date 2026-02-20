@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 import torch
+from huggingface_hub import snapshot_download
 
 from circuit_tracer.attribution.attribute import attribute
 from circuit_tracer.replacement_model.replacement_model_transformerlens import (
@@ -20,10 +21,7 @@ from circuit_tracer.transcoder.single_layer_transcoder import load_transcoder_se
 
 MODEL_NAME = "Qwen/Qwen3-4B"
 N_LAYERS = 36
-# Local directory containing layer_0.safetensors through layer_35.safetensors.
-# NOTE: Adjust this path to match where you've placed the transcoders on CSD3.
-TRANSCODER_DIR = Path.home() / "rds" / "hpc-work" / "transcoders" / "qwen3-4b"
-TRANSCODER_SCAN = "mwhanna/qwen3-4b-transcoders"
+TRANSCODER_REPO = "mwhanna/qwen3-4b-transcoders"
 
 FEATURE_INPUT_HOOK = "mlp.hook_in"
 FEATURE_OUTPUT_HOOK = "mlp.hook_out"
@@ -63,28 +61,24 @@ def main():
     print(f"Prompt: {PROMPT!r}")
     print()
 
-    # B. Resolve transcoder paths from local directory
-    with timed("Resolving local transcoder paths"):
-        if not TRANSCODER_DIR.is_dir():
-            raise FileNotFoundError(
-                f"Transcoder directory not found: {TRANSCODER_DIR}\n"
-                f"Place layer_0.safetensors through layer_{N_LAYERS - 1}.safetensors there."
-            )
+    # B. Resolve transcoder paths from HF cache
+    with timed("Resolving transcoder paths"):
+        transcoder_dir = Path(snapshot_download(TRANSCODER_REPO))
         transcoder_paths = {}
         for layer in range(N_LAYERS):
-            path = TRANSCODER_DIR / f"layer_{layer}.safetensors"
+            path = transcoder_dir / f"layer_{layer}.safetensors"
             if not path.exists():
                 raise FileNotFoundError(
                     f"Missing transcoder for layer {layer}: {path}"
                 )
             transcoder_paths[layer] = str(path)
-        print(f"  Found {len(transcoder_paths)} transcoder files in {TRANSCODER_DIR}")
+        print(f"  Found {len(transcoder_paths)} transcoder files in {transcoder_dir}")
 
     # C. Load TranscoderSet
     with timed("Loading TranscoderSet"):
         transcoder_set = load_transcoder_set(
             transcoder_paths=transcoder_paths,
-            scan=TRANSCODER_SCAN,
+            scan=TRANSCODER_REPO,
             feature_input_hook=FEATURE_INPUT_HOOK,
             feature_output_hook=FEATURE_OUTPUT_HOOK,
             device=device,
