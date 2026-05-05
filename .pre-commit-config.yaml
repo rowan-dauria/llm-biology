@@ -1,21 +1,16 @@
 repos:
-  - repo: local
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.11
     hooks:
       - id: ruff-check
-        name: ruff lint
-        entry: ruff check --fix
-        language: system
+        args: [--fix]
         types_or: [python, pyi, jupyter]
-
       - id: ruff-format
-        name: ruff format
-        entry: ruff format
-        language: system
         types_or: [python, pyi, jupyter]
 
+  - repo: https://github.com/RobertCraigie/pyright-python
+    rev: v1.1.408
+    hooks:
       - id: pyright
-        name: pyright
-        entry: pyright
-        language: system
         pass_filenames: false
         types_or: [python, pyi]
