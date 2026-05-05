@@ -1,7 +1,8 @@
-"""Inspect a transcoder feature's top-K activating windows.
+"""View a transcoder feature's top-K activating windows.
 
 Usage:
-    python -m feature_lookup.inspect --layer 12 --feature 39989
+    python feature_lookup/view_topk.py --layer 12 --feature 39989
+    python -m feature_lookup.view_topk --layer 12 --feature 39989
 
 Re-streams the corpus referenced in the saved top-K file (so windows aren't
 materialised to disk; just to memory on demand) and prints each top-K window
@@ -16,7 +17,10 @@ from pathlib import Path
 import torch
 from transformers import AutoTokenizer
 
-from .corpus import iter_texts
+try:
+    from .corpus import iter_texts
+except ImportError:
+    from corpus import iter_texts
 
 DEFAULT_DIR = Path(__file__).parent.parent / "data" / "feature_topk"
 

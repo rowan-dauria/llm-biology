@@ -28,7 +28,10 @@ from huggingface_hub import snapshot_download
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from .corpus import iter_batches
+try:
+    from .corpus import iter_batches
+except ImportError:
+    from corpus import iter_batches
 
 MODEL_ID = "Qwen/Qwen3-4B-Instruct-2507"
 TRANSCODER_REPO = "mwhanna/qwen3-4b-transcoders"
