@@ -210,3 +210,4 @@ __marimo__/
 # Project artefacts
 data/attribution_graphs/
 data/feature_topk/
+data/feature_labels/
