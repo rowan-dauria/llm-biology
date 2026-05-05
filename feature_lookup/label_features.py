@@ -46,7 +46,7 @@ DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_OLLAMA_MODEL = "qwen3:4b"
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
 
-SYSTEM_PROMPT = """You are analysing a single internal feature of a transformer (Qwen3-4B). You will be shown the top-K text contexts where this feature fires most strongly, with the trigger token wrapped as <<token>>. Identify the concept the feature appears to detect.
+SYSTEM_PROMPT = """You are analysing a single internal feature of a transformer (Qwen3-4B). You will be shown the top-K text contexts where this feature fires most strongly, with the trigger token wrapped as <<token>>. Only the token inside << >> is the activating token position; the surrounding text is included only to interpret that token in context. Identify the concept the feature appears to detect.
 
 Output strict JSON: {"label": "...", "rationale": "..."}. The label must be 1-5 words. The rationale must be one sentence. If the activations look incoherent or noisy, label "unclear" and explain why."""
 
