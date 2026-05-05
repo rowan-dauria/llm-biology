@@ -80,21 +80,23 @@ def make_topk_hook(
 
         with torch.no_grad():
             mlp_input = args[0]
-            feats = transcoder.encode(mlp_input).to(torch.float32)  # (B, T, F)
-
+            # Stay in the device dtype (fp16 on MPS) for the big (B, T, F) tensor.
+            feats = transcoder.encode(mlp_input)
             mask = state.attention_mask.bool().unsqueeze(-1)
-            feats = feats.masked_fill(~mask, float("-inf"))
+            feats.masked_fill_(~mask, float("-inf"))
 
             b, t, f = feats.shape
             flat_feats = feats.view(b * t, f)
 
             batch_vals, batch_pos = flat_feats.topk(state.k, dim=0)  # (K, F) each
-            prompt_idx_in_batch = batch_pos // t  # (K, F) int64
-            token_pos = (batch_pos % t).to(torch.int16)  # (K, F)
-            batch_pid = state.prompt_ids[prompt_idx_in_batch].to(torch.int32)  # (K, F)
+            del feats, flat_feats  # release the big tensor before doing more work
+
+            prompt_idx_in_batch = batch_pos // t
+            token_pos = (batch_pos % t).to(torch.int16)
+            batch_pid = state.prompt_ids[prompt_idx_in_batch].to(torch.int32)
 
             ls = state.layer_state[layer_idx]
-            combined_vals = torch.cat([ls.vals, batch_vals], dim=0)
+            combined_vals = torch.cat([ls.vals, batch_vals.to(torch.float32)], dim=0)
             combined_pid = torch.cat([ls.pid, batch_pid], dim=0)
             combined_tpos = torch.cat([ls.tpos, token_pos], dim=0)
 
@@ -190,6 +192,8 @@ def main() -> None:
                     input_ids=batch.input_ids,
                     attention_mask=batch.attention_mask,
                 )
+            if device.type == "mps":
+                torch.mps.empty_cache()
     finally:
         for h in handles:
             h.remove()
