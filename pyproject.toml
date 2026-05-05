@@ -1,0 +1,41 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [
+    "venv",
+    "mlp_activations/data",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "SIM",
+]
+ignore = [
+    "E501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"notebooks/*.ipynb" = ["E402"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+include = [
+    ".",
+]
+exclude = [
+    "**/__pycache__",
+    ".git",
+    ".ruff_cache",
+    "venv",
+    "mlp_activations/data",
+    "notebooks",
+]
+reportMissingTypeStubs = false
+reportMissingImports = false
+reportUnknownMemberType = false

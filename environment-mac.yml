@@ -1,0 +1,19 @@
+name: qwen-sae-mac
+channels:
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - accelerate
+      - circuit-tracer
+      - huggingface-hub
+      - numpy
+      - pre-commit==4.5.1
+      - pyright[nodejs]==1.1.408
+      - ruff==0.15.11
+      - safetensors
+      - sentencepiece
+      - torch
+      - tqdm
+      - transformers
