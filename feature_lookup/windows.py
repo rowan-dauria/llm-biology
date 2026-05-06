@@ -65,6 +65,12 @@ def select_features(
         active_ids = frozenset(
             pid for pid, val in zip(prompt_ids, vals, strict=True) if math.isfinite(val) and val > 0
         )
+        # note: diversity drops features whose top-K windows pile into too few prompts —
+        # those are usually single-doc artefacts (e.g. fires on every comma in one file)
+        # rather than generalisable concepts, and the LLM label would be misleading.
+        # Caveat on small corpora (~1k Pile docs): a genuinely niche feature (e.g. fires
+        # on "Habsburg") may only have 1-2 source docs and get filtered out too. Lower
+        # `--diversity` (e.g. 2) on small corpora, or scale the corpus to ~10k docs.
         if len(active_ids) < diversity:
             continue
         selected.append(
