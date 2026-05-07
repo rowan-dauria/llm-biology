@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -40,11 +41,13 @@ DEFAULT_WINDOW = 10
 DEFAULT_TOP_N = 200
 DEFAULT_DIVERSITY = 4
 DEFAULT_CONCURRENCY = 8
-DEFAULT_PROVIDER = "ollama"
+DEFAULT_PROVIDER = "transformers"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_OLLAMA_MODEL = "qwen3:4b"
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
+DEFAULT_TRANSFORMERS_MODEL = "google/gemma-4-E4B-it"
+DEFAULT_MAX_NEW_TOKENS = 256
 
 SYSTEM_PROMPT = """You are analysing a single internal feature of a transformer (Qwen3-4B). You will be shown the top-K text contexts where this feature fires most strongly, with the trigger token wrapped as <<token>>. Only the token inside << >> is the activating token position; the surrounding text is included only to interpret that token in context. Identify the concept the feature appears to detect.
 
@@ -116,6 +119,139 @@ def _validate_response(text: str) -> dict[str, str]:
     if "\n" in rationale:
         raise ValueError("Rationale must be one sentence")
     return {"label": label, "rationale": rationale}
+
+
+_TRANSFORMERS_STATE: dict[str, Any] = {}
+_JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
+
+
+def _extract_json_block(text: str) -> str:
+    match = _JSON_BLOCK_RE.search(text)
+    return match.group(0) if match else text
+
+
+def _load_transformers(model_id: str) -> dict[str, Any]:
+    if _TRANSFORMERS_STATE.get("model_id") == model_id:
+        return _TRANSFORMERS_STATE
+
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    # Use AutoTokenizer (text-only) rather than AutoProcessor: Gemma 4's processor
+    # pulls in Gemma4VideoProcessor which requires torchvision, and torchvision is
+    # deliberately not installed in qwen-sae (conflicts with this torch build).
+    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        dtype="auto",
+        device_map="auto",
+        trust_remote_code=True,
+    )
+    model.eval()
+    for p in model.parameters():
+        p.requires_grad_(False)
+
+    _TRANSFORMERS_STATE.clear()
+    _TRANSFORMERS_STATE.update(
+        {
+            "model_id": model_id,
+            "tokenizer": tokenizer,
+            "model": model,
+            "device": next(model.parameters()).device,
+        }
+    )
+    return _TRANSFORMERS_STATE
+
+
+def _build_chat_text(tokenizer: Any, system_prompt: str, user_prompt: str) -> str:
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    return tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=False,
+    )
+
+
+def _generate_batch(state: dict[str, Any], prompts: list[str]) -> list[str]:
+    tokenizer = state["tokenizer"]
+    model = state["model"]
+    device = state["device"]
+    enc = tokenizer(prompts, padding=True, return_tensors="pt").to(device)
+
+    with torch.no_grad():
+        out = model.generate(
+            **enc,
+            max_new_tokens=DEFAULT_MAX_NEW_TOKENS,
+            do_sample=False,
+            pad_token_id=tokenizer.pad_token_id,
+        )
+    input_len = enc["input_ids"].shape[1]
+    new_tokens = out[:, input_len:]
+    return tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
+
+
+def _run_transformers_labels(
+    model_id: str,
+    layer: int,
+    payloads: list[tuple[FeatureSummary, str]],
+    output_path: Path,
+    batch_size: int,
+) -> None:
+    from tqdm import tqdm
+
+    state = _load_transformers(model_id)
+    tokenizer = state["tokenizer"]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    failures: list[str] = []
+    reminder = "\n\nReply with valid JSON only."
+
+    def _label_one_text(user_prompt: str) -> dict[str, str]:
+        prompts = [_build_chat_text(tokenizer, SYSTEM_PROMPT, user_prompt)]
+        text = _generate_batch(state, prompts)[0]
+        return _validate_response(_extract_json_block(text).strip())
+
+    with output_path.open("a", encoding="utf-8") as handle:
+        for start in tqdm(range(0, len(payloads), batch_size), desc="batches"):
+            chunk = payloads[start : start + batch_size]
+            chat_texts = [_build_chat_text(tokenizer, SYSTEM_PROMPT, up) for _, up in chunk]
+            try:
+                outputs = _generate_batch(state, chat_texts)
+            except Exception as exc:
+                for summary, _ in chunk:
+                    failures.append(f"feature {summary.feature}: batch failure: {exc}")
+                continue
+
+            for (summary, user_prompt), raw in zip(chunk, outputs, strict=True):
+                payload: dict[str, str] | None = None
+                try:
+                    payload = _validate_response(_extract_json_block(raw).strip())
+                except Exception:
+                    try:
+                        payload = _label_one_text(user_prompt + reminder)
+                    except Exception as exc:
+                        failures.append(f"feature {summary.feature}: {exc}")
+                        continue
+
+                record = {
+                    "layer": layer,
+                    "feature": summary.feature,
+                    "label": payload["label"],
+                    "rationale": payload["rationale"],
+                    "max_activation": summary.max_activation,
+                    "n_distinct_prompts": summary.n_distinct_prompts,
+                }
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+                handle.flush()
+
+    if failures:
+        raise RuntimeError("Some features failed to label: " + "; ".join(failures))
 
 
 async def _anthropic_complete(
@@ -402,12 +538,23 @@ async def _async_main(args: argparse.Namespace) -> None:
         _print_dry_run(args.layer, payloads)
         return
 
+    if args.provider == "transformers":
+        model = args.model or DEFAULT_TRANSFORMERS_MODEL
+        _run_transformers_labels(
+            model,
+            args.layer,
+            payloads,
+            output_path,
+            args.concurrency,
+        )
+        return
+
     api_key = None
     if args.provider == "anthropic":
         api_key = os.getenv("ANTHROPIC_API_KEY")
     elif args.provider == "openai":
         api_key = os.getenv("OPENAI_API_KEY")
-    if args.provider != "ollama" and not api_key:
+    if args.provider not in {"ollama", "transformers"} and not api_key:
         raise RuntimeError(f"{args.provider.upper()}_API_KEY is not set")
 
     model = args.model or (
@@ -439,7 +586,7 @@ def main() -> None:
     parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)
     parser.add_argument(
         "--provider",
-        choices=("ollama", "openai", "anthropic"),
+        choices=("transformers", "ollama", "openai", "anthropic"),
         default=DEFAULT_PROVIDER,
     )
     parser.add_argument(
