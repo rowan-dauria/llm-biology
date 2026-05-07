@@ -33,7 +33,7 @@ try:
 except ImportError:
     from corpus import iter_batches, iter_texts
 
-MODEL_ID = "Qwen/Qwen3-4B-Instruct-2507"
+MODEL_ID = "Qwen/Qwen3-4B"
 TRANSCODER_REPO = "mwhanna/qwen3-4b-transcoders"
 NUM_LAYERS = 36
 LAYERS_TO_HOOK = [2, NUM_LAYERS // 3, (2 * NUM_LAYERS) // 3, NUM_LAYERS - 3]

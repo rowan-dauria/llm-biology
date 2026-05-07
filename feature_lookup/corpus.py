@@ -152,7 +152,7 @@ def main() -> None:
     p.add_argument("--corpus_spec", default="hf:monology/pile-uncopyrighted:train:32")
     p.add_argument("--batch_size", type=int, default=8)
     p.add_argument("--max_seq_len", type=int, default=256)
-    p.add_argument("--model_id", default="Qwen/Qwen3-4B-Instruct-2507")
+    p.add_argument("--model_id", default="Qwen/Qwen3-4B")
     args = p.parse_args()
 
     tok = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=True)

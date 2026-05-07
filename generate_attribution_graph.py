@@ -29,7 +29,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-MODEL_ID = "Qwen/Qwen3-4B-Instruct-2507"
+MODEL_ID = "Qwen/Qwen3-4B"
 TRANSCODER_REPO = "mwhanna/qwen3-4b-transcoders"
 
 # Qwen3-4B has 36 transformer layers. Sample 4 across depth.

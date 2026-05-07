@@ -6,7 +6,7 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # Configuration
-MODEL_ID = "Qwen/Qwen3-4B-Instruct-2507"
+MODEL_ID = "Qwen/Qwen3-4B"
 CACHE_DIR = os.getenv("HF_HOME")
 LAYERS_TO_HOOK = [10, 20]
 SCRIPT_DIR = Path(__file__).parent.resolve()
