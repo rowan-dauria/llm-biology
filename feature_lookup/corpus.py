@@ -20,8 +20,34 @@ import json
 from collections.abc import Iterator
 from dataclasses import dataclass
 
+import fsspec.compression
 import torch
 from transformers import AutoTokenizer
+
+
+def _register_zstd() -> None:
+    """Register zstd with fsspec so streamed `.jsonl.zst` Pile shards open.
+
+    fsspec ships codecs for gzip/bz2/xz/zip/lzma but not zstd, even when the
+    `zstandard` package is installed. Without this, `monology/pile-uncopyrighted`
+    fails with `ValueError: Compression type zstd not supported` after dataset
+    streaming starts (which happens *after* the ~80s model load on CSD3).
+    """
+    try:
+        import zstandard
+    except ImportError:
+        return
+
+    if "zstd" in fsspec.compression.compr:
+        return
+
+    def _open(infile, mode="rb", **_kwargs):
+        return zstandard.ZstdDecompressor().stream_reader(infile, read_across_frames=True)
+
+    fsspec.compression.register_compression("zstd", _open, ["zst", "zstd"])
+
+
+_register_zstd()
 
 
 @dataclass

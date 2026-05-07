@@ -29,9 +29,9 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 try:
-    from .corpus import iter_batches
+    from .corpus import iter_batches, iter_texts
 except ImportError:
-    from corpus import iter_batches
+    from corpus import iter_batches, iter_texts
 
 MODEL_ID = "Qwen/Qwen3-4B-Instruct-2507"
 TRANSCODER_REPO = "mwhanna/qwen3-4b-transcoders"
@@ -133,6 +133,14 @@ def main() -> None:
     parser.add_argument("--max_seq_len", type=int, default=256)
     parser.add_argument("--model_id", default=MODEL_ID)
     args = parser.parse_args()
+
+    # Preflight: fail fast on dataset/network/codec issues before the ~80s model load.
+    print(f"[INFO] preflight: opening {args.corpus_spec!r}")
+    t0 = time.time()
+    sample = next(iter(iter_texts(args.corpus_spec)), None)
+    if sample is None:
+        raise RuntimeError(f"corpus_spec {args.corpus_spec!r} yielded no texts")
+    print(f"[INFO] preflight ok in {time.time() - t0:.1f}s, first doc len={len(sample)}")
 
     device, dtype = pick_device_dtype()
     print(f"[INFO] device={device} dtype={dtype}")

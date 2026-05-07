@@ -211,3 +211,6 @@ __marimo__/
 data/attribution_graphs/
 data/feature_topk/
 data/feature_labels/
+
+# SLURM job outputs (stdout/stderr + machine.file.*)
+slurm_logs/
