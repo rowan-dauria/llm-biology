@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import re
 import urllib.error
 import urllib.request
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,7 @@ try:
     from .windows import (
         FeatureSummary,
         Window,
+        active_prompt_ids,
         collect_prompt_texts,
         format_windows_for_prompt,
         get_windows,
@@ -29,6 +32,7 @@ except ImportError:
     from windows import (  # type: ignore[no-redef]
         FeatureSummary,
         Window,
+        active_prompt_ids,
         collect_prompt_texts,
         format_windows_for_prompt,
         get_windows,
@@ -197,12 +201,33 @@ def _generate_batch(state: dict[str, Any], prompts: list[str]) -> list[str]:
     return tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
 
 
+def _build_record(
+    layer: int,
+    summary: FeatureSummary,
+    payload: dict[str, str],
+    source_tag: str | None,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "layer": layer,
+        "feature": summary.feature,
+        "label": payload["label"],
+        "rationale": payload["rationale"],
+        "max_activation": summary.max_activation,
+        "n_distinct_prompts": summary.n_distinct_prompts,
+    }
+    if source_tag:
+        record["source"] = source_tag
+    return record
+
+
 def _run_transformers_labels(
     model_id: str,
     layer: int,
     payloads: list[tuple[FeatureSummary, str]],
     output_path: Path,
     batch_size: int,
+    *,
+    source_tag: str | None = None,
 ) -> None:
     from tqdm import tqdm
 
@@ -239,14 +264,7 @@ def _run_transformers_labels(
                         failures.append(f"feature {summary.feature}: {exc}")
                         continue
 
-                record = {
-                    "layer": layer,
-                    "feature": summary.feature,
-                    "label": payload["label"],
-                    "rationale": payload["rationale"],
-                    "max_activation": summary.max_activation,
-                    "n_distinct_prompts": summary.n_distinct_prompts,
-                }
+                record = _build_record(layer, summary, payload, source_tag)
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
                 handle.flush()
 
@@ -431,6 +449,8 @@ async def _run_api_labels(
     output_path: Path,
     concurrency: int,
     ollama_host: str,
+    *,
+    source_tag: str | None = None,
 ) -> None:
     semaphore = asyncio.Semaphore(concurrency)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -458,14 +478,7 @@ async def _run_api_labels(
             if outcome.record is None:
                 failures.append(f"feature {outcome.summary.feature}: {outcome.error}")
                 continue
-            record = {
-                "layer": layer,
-                "feature": outcome.summary.feature,
-                "label": outcome.record["label"],
-                "rationale": outcome.record["rationale"],
-                "max_activation": outcome.summary.max_activation,
-                "n_distinct_prompts": outcome.summary.n_distinct_prompts,
-            }
+            record = _build_record(layer, outcome.summary, outcome.record, source_tag)
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             handle.flush()
 
@@ -546,6 +559,7 @@ async def _async_main(args: argparse.Namespace) -> None:
             payloads,
             output_path,
             args.concurrency,
+            source_tag="layer_batch",
         )
         return
 
@@ -575,7 +589,154 @@ async def _async_main(args: argparse.Namespace) -> None:
         output_path,
         args.concurrency,
         ollama_host,
+        source_tag="layer_batch",
     )
+
+
+def _count_lines(path: Path) -> int:
+    if not path.exists():
+        return 0
+    count = 0
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                count += 1
+    return count
+
+
+def _summary_for_feature(layer_data: dict[str, Any], feature: int) -> FeatureSummary | None:
+    active = active_prompt_ids(layer_data, feature)
+    if not active:
+        return None
+    vals = layer_data["topk_vals"][:, feature].tolist()
+    max_activation = 0.0
+    for raw in vals:
+        value = float(raw)
+        if math.isfinite(value) and value > max_activation:
+            max_activation = value
+    return FeatureSummary(
+        feature=feature,
+        max_activation=max_activation,
+        n_distinct_prompts=len(active),
+        active_prompt_ids=active,
+    )
+
+
+def label_features_subset(
+    layer: int,
+    feature_indices: Iterable[int],
+    *,
+    provider: str = DEFAULT_PROVIDER,
+    model: str | None = None,
+    concurrency: int = DEFAULT_CONCURRENCY,
+    ollama_host: str | None = None,
+    corpus_spec_override: str | None = None,
+    source_tag: str = "on_demand",
+) -> dict[str, int]:
+    """Label an explicit list of ``(layer, feature)`` pairs.
+
+    Uses the saved ``topk_layer_<L>.pt`` windows. Features already present in
+    ``data/feature_labels/layer_<L>.jsonl`` are skipped. The graph-surfaced
+    diversity filter is *not* applied — features with sparse activations are
+    still labelled but emit a one-line caveat.
+
+    Returns counts: ``{requested, skipped_existing, no_active_windows,
+    written, failed}``.
+    """
+
+    requested = list(dict.fromkeys(int(feature) for feature in feature_indices))
+    output_path = _output_path(layer)
+    existing = _read_existing_features(output_path)
+
+    pending = [feature for feature in requested if feature not in existing]
+    counts: dict[str, int] = {
+        "requested": len(requested),
+        "skipped_existing": len(requested) - len(pending),
+        "no_active_windows": 0,
+        "written": 0,
+        "failed": 0,
+    }
+    if not pending:
+        return counts
+
+    layer_data = _load_topk(layer)
+    summaries: list[FeatureSummary] = []
+    for feature in pending:
+        summary = _summary_for_feature(layer_data, feature)
+        if summary is None:
+            counts["no_active_windows"] += 1
+            print(f"[CAVEAT] layer {layer} feature {feature}: no active windows; skipped")
+            continue
+        if summary.n_distinct_prompts < DEFAULT_DIVERSITY:
+            print(
+                f"[CAVEAT] layer {layer} feature {feature}: "
+                f"{summary.n_distinct_prompts} active prompts "
+                f"(< diversity threshold {DEFAULT_DIVERSITY}); labelling anyway"
+            )
+        summaries.append(summary)
+
+    if not summaries:
+        return counts
+
+    tokenizer = load_tokenizer(str(layer_data["model_id"]))
+    corpus_spec = corpus_spec_override or str(layer_data["corpus_spec"])
+    payloads = _build_payloads(
+        layer,
+        layer_data,
+        summaries,
+        tokenizer=tokenizer,
+        corpus_spec=corpus_spec,
+    )
+
+    before_count = _count_lines(output_path)
+
+    try:
+        if provider == "transformers":
+            run_model = model or DEFAULT_TRANSFORMERS_MODEL
+            _run_transformers_labels(
+                run_model,
+                layer,
+                payloads,
+                output_path,
+                concurrency,
+                source_tag=source_tag,
+            )
+        else:
+            api_key = None
+            if provider == "anthropic":
+                api_key = os.getenv("ANTHROPIC_API_KEY")
+            elif provider == "openai":
+                api_key = os.getenv("OPENAI_API_KEY")
+            if provider not in {"ollama"} and not api_key:
+                raise RuntimeError(f"{provider.upper()}_API_KEY is not set")
+            run_model = model or (
+                DEFAULT_ANTHROPIC_MODEL
+                if provider == "anthropic"
+                else DEFAULT_OPENAI_MODEL
+                if provider == "openai"
+                else DEFAULT_OLLAMA_MODEL
+            )
+            host = ollama_host or os.getenv("OLLAMA_HOST") or DEFAULT_OLLAMA_HOST
+            asyncio.run(
+                _run_api_labels(
+                    provider,
+                    run_model,
+                    api_key,
+                    layer,
+                    payloads,
+                    output_path,
+                    concurrency,
+                    host,
+                    source_tag=source_tag,
+                )
+            )
+    except RuntimeError as exc:
+        print(f"[WARN] layer {layer}: {exc}")
+
+    after_count = _count_lines(output_path)
+    counts["written"] = max(0, after_count - before_count)
+    counts["failed"] = len(payloads) - counts["written"]
+    return counts
 
 
 def main() -> None:

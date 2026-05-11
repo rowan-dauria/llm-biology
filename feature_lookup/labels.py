@@ -18,6 +18,7 @@ class FeatureLabel:
     rationale: str
     max_activation: float | None = None
     n_distinct_prompts: int | None = None
+    source: str | None = None
 
 
 FeatureLabelMap = dict[tuple[int, int], FeatureLabel]
@@ -37,6 +38,8 @@ def _parse_record(record: dict[str, Any], *, source: Path, line_no: int) -> Feat
 
     max_activation = record.get("max_activation")
     n_distinct_prompts = record.get("n_distinct_prompts")
+    raw_source = record.get("source")
+    record_source = str(raw_source) if isinstance(raw_source, str) and raw_source else None
     return FeatureLabel(
         layer=layer,
         feature=feature,
@@ -44,6 +47,7 @@ def _parse_record(record: dict[str, Any], *, source: Path, line_no: int) -> Feat
         rationale=rationale,
         max_activation=float(max_activation) if max_activation is not None else None,
         n_distinct_prompts=(int(n_distinct_prompts) if n_distinct_prompts is not None else None),
+        source=record_source,
     )
 
 
