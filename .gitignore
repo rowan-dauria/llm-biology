@@ -211,6 +211,8 @@ __marimo__/
 data/attribution_graphs/
 data/feature_topk/
 data/feature_labels/
+data/ui_graphs/
+data/dog_prompts.jsonl
 
 # SLURM job outputs (stdout/stderr + machine.file.*)
 slurm_logs/
