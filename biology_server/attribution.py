@@ -14,7 +14,7 @@ import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import torch
 from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTranscoder
@@ -143,35 +143,6 @@ def parse_layers(raw: str) -> list[int]:
 def slugify(text: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", text.strip().lower()).strip("-")
     return slug or "qwen3-circuit"
-
-
-def render_chat_prompt(tokenizer: PreTrainedTokenizerBase, prompt: str) -> str:
-    """Wrap a plain user prompt in the model's chat template when available."""
-
-    apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
-    if not callable(apply_chat_template):
-        return prompt
-
-    messages = [{"role": "user", "content": prompt}]
-    try:
-        return cast(
-            str,
-            apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-                enable_thinking=True,
-            ),
-        )
-    except TypeError:
-        return cast(
-            str,
-            apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            ),
-        )
 
 
 def make_embedding_hook(state: HookState):
@@ -638,10 +609,7 @@ class BiologyAttributionRunner:
     ) -> tuple[Any, list[int], list[str]]:
         if self._device is None:
             raise RuntimeError("runner device is not loaded")
-        model_prompt = render_chat_prompt(tokenizer, prompt)
-        if model_prompt != prompt:
-            print("[INFO] rendered prompt with tokenizer chat template")
-        inputs = tokenizer([model_prompt], return_tensors="pt").to(self._device)
+        inputs = tokenizer(prompt, return_tensors="pt").to(self._device)
         input_token_ids = [
             int(token_id) for token_id in inputs.input_ids[0].detach().cpu().tolist()
         ]

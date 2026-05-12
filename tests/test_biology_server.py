@@ -6,16 +6,9 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
-import torch
-
-from biology_server.attribution import (
-    BiologyAttributionRunner,
-    GraphResult,
-    PreviewResult,
-    TokenCandidate,
-)
+from biology_server.attribution import GraphResult, PreviewResult, TokenCandidate
 from biology_server.server import serve
 
 
@@ -122,34 +115,6 @@ class FakeRunner:
 
 
 class BiologyServerTests(unittest.TestCase):
-    def test_runner_tokenizes_chat_template_for_plain_prompt(self) -> None:
-        tokenizer = FakeChatTokenizer()
-        runner = BiologyAttributionRunner()
-        runner._device = torch.device("cpu")
-
-        _inputs, input_token_ids, prompt_tokens = runner._inputs_for_prompt(
-            cast(Any, tokenizer),
-            "hello",
-        )
-
-        self.assertEqual(
-            tokenizer.template_calls,
-            [
-                {
-                    "messages": [{"role": "user", "content": "hello"}],
-                    "tokenize": False,
-                    "add_generation_prompt": True,
-                    "enable_thinking": True,
-                }
-            ],
-        )
-        self.assertEqual(
-            tokenizer.tokenized_texts,
-            [["<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n"]],
-        )
-        self.assertEqual(input_token_ids, [11, 22, 33])
-        self.assertEqual(prompt_tokens, ["tok11", "tok22", "tok33"])
-
     def test_preview_and_background_graph_job(self) -> None:
         with run_test_server(FakeRunner()) as client:
             preview = client.post("/api/preview", {"prompt": "hello", "slug": "demo"})
@@ -252,49 +217,6 @@ class HttpTestClient:
         if self_status != expected_status:
             raise AssertionError(f"expected {expected_status}, got {self_status}: {body!r}")
         return json.loads(body.decode("utf-8"))
-
-
-class FakeBatch:
-    def __init__(self) -> None:
-        self.input_ids = torch.tensor([[11, 22, 33]])
-        self.device: torch.device | None = None
-
-    def to(self, device: torch.device) -> FakeBatch:
-        self.device = device
-        return self
-
-
-class FakeChatTokenizer:
-    def __init__(self) -> None:
-        self.template_calls: list[dict[str, Any]] = []
-        self.tokenized_texts: list[list[str]] = []
-        self.return_tensors: str | None = None
-
-    def apply_chat_template(
-        self,
-        messages: list[dict[str, str]],
-        *,
-        tokenize: bool,
-        add_generation_prompt: bool,
-        enable_thinking: bool,
-    ) -> str:
-        self.template_calls.append(
-            {
-                "messages": messages,
-                "tokenize": tokenize,
-                "add_generation_prompt": add_generation_prompt,
-                "enable_thinking": enable_thinking,
-            }
-        )
-        return "<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n"
-
-    def __call__(self, texts: list[str], *, return_tensors: str) -> FakeBatch:
-        self.tokenized_texts.append(texts)
-        self.return_tensors = return_tensors
-        return FakeBatch()
-
-    def batch_decode(self, token_groups: list[list[int]]) -> list[str]:
-        return [f"tok{group[0]}" for group in token_groups]
 
 
 class run_test_server:
