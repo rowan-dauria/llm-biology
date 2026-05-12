@@ -34,6 +34,9 @@ Start the prompt-preview backend and bundled circuit-tracer wrapper UI:
 python -m biology_server --port 8041 --graph-file-dir data/ui_graphs
 ```
 
+Preview and graph generation accept a plain user prompt; the backend wraps it
+with the Qwen chat template before tokenization.
+
 The equivalent script wrapper is:
 
 ```bash
