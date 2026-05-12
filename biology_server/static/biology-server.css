@@ -1,0 +1,133 @@
+html,
+body {
+  margin: 0;
+  background: #f6f7f8;
+  color: #171717;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.server-shell {
+  min-height: 100vh;
+}
+
+.prompt-panel {
+  display: grid;
+  grid-template-columns: minmax(520px, 1fr) minmax(300px, 420px);
+  gap: 16px;
+  padding: 14px 16px;
+  border-bottom: 1px solid #d8dee4;
+  background: #fff;
+}
+
+.prompt-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+textarea {
+  min-height: 86px;
+  resize: vertical;
+  border: 1px solid #bcc5cf;
+  border-radius: 6px;
+  padding: 10px;
+  font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.settings-row {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #59636e;
+}
+
+input {
+  height: 32px;
+  box-sizing: border-box;
+  border: 1px solid #bcc5cf;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font: 13px system-ui, sans-serif;
+}
+
+#slug {
+  width: 220px;
+}
+
+#max-feature-nodes,
+#edge-top-k {
+  width: 96px;
+}
+
+button {
+  height: 32px;
+  border: 1px solid #1f2328;
+  border-radius: 6px;
+  background: #1f2328;
+  color: #fff;
+  padding: 0 13px;
+  font: 13px system-ui, sans-serif;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.status-panel {
+  min-width: 0;
+  border-left: 1px solid #e4e7eb;
+  padding-left: 14px;
+  font-size: 13px;
+}
+
+.status-line {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.target-token {
+  margin-bottom: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.top-tokens {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.token-chip {
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #f6f8fa;
+  padding: 2px 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre;
+}
+
+#job-log {
+  max-height: 86px;
+  overflow: auto;
+  margin: 8px 0 0;
+  color: #59636e;
+  background: transparent;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+#graph {
+  height: calc(100vh - 185px);
+  background: #fff;
+  padding: 10px;
+  box-sizing: border-box;
+}

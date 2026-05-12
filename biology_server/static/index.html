@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1100, initial-scale=1">
+<title>Biology Attribution Server</title>
+<link rel="stylesheet" href="/ct/style.css">
+<link rel="stylesheet" href="/ct/attribution_graph/cg.css">
+<link rel="stylesheet" href="/ct/attribution_graph/gridsnap/gridsnap.css">
+<link rel="stylesheet" href="/ct/feature_examples/feature-examples.css">
+<link rel="stylesheet" href="/biology-server.css">
+
+<div class="tooltip tooltip-hidden"></div>
+<main class="server-shell">
+  <section class="prompt-panel">
+    <div class="prompt-controls">
+      <textarea id="prompt" spellcheck="false">The biological function of hemoglobin is to</textarea>
+      <div class="settings-row">
+        <label>
+          Slug
+          <input id="slug" type="text" placeholder="auto">
+        </label>
+        <label>
+          Feature nodes
+          <input id="max-feature-nodes" type="number" min="1" step="1" value="300">
+        </label>
+        <label>
+          Edges
+          <input id="edge-top-k" type="number" min="0" step="1" value="20">
+        </label>
+        <button id="preview-button" type="button">Preview</button>
+        <button id="generate-button" type="button" disabled>Generate</button>
+      </div>
+    </div>
+    <div class="status-panel">
+      <div class="status-line" id="status">Ready</div>
+      <div class="target-token" id="target-token"></div>
+      <div class="top-tokens" id="top-tokens"></div>
+      <pre id="job-log"></pre>
+    </div>
+  </section>
+  <section id="graph" class="cg"></section>
+</main>
+
+<script>
+window.isLocalServing = true
+</script>
+<script src="https://transformer-circuits.pub/2025/attribution-graphs/static_js/lib/d3.js"></script>
+<script src="https://transformer-circuits.pub/2025/attribution-graphs/static_js/lib/jetpack_2024-07-20.js"></script>
+<script src="https://transformer-circuits.pub/2025/attribution-graphs/static_js/lib/npy_v0.js"></script>
+<script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
+<script src="https://unpkg.com/pako@2.1.0/dist/pako.min.js"></script>
+
+<script src="/ct/feature_examples/init-feature-examples-list.js"></script>
+<script src="/ct/feature_examples/init-feature-examples-logits.js"></script>
+<script src="/ct/feature_examples/init-feature-examples.js"></script>
+
+<script src="/ct/util.js"></script>
+<script src="/ct/attribution_graph/util-cg.js"></script>
+<script src="/ct/attribution_graph/render-act-histogram.js"></script>
+<script src="/ct/attribution_graph/gridsnap/init-gridsnap.js"></script>
+<script src="/ct/attribution_graph/init-cg-button-container.js"></script>
+<script src="/ct/attribution_graph/init-cg-link-graph.js"></script>
+<script src="/ct/attribution_graph/init-cg-node-connections.js"></script>
+<script src="/ct/attribution_graph/init-cg-clerp-list.js"></script>
+<script src="/ct/attribution_graph/init-cg-feature-detail.js"></script>
+<script src="/ct/attribution_graph/init-cg-feature-scatter.js"></script>
+<script src="/ct/attribution_graph/init-cg-subgraph.js"></script>
+<script src="/ct/attribution_graph/init-cg.js"></script>
+<script src="/biology-server.js"></script>
