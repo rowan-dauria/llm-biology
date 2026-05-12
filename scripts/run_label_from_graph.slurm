@@ -52,7 +52,7 @@ LOG_DIR="$PROJECT_ROOT/slurm_logs"
 mkdir -p "$LOG_DIR"
 
 if [ -z "${SLUG:-}" ]; then
-    echo "ERROR: SLUG env var is required (e.g. sbatch --export=ALL,SLUG=my-graph run_label_from_graph.slurm)" >&2
+    echo "ERROR: SLUG env var is required (e.g. sbatch --export=ALL,SLUG=my-graph scripts/run_label_from_graph.slurm)" >&2
     exit 1
 fi
 
@@ -79,7 +79,7 @@ fi
 
 echo -e "\nnumtasks=$numtasks, numnodes=$numnodes, mpi_tasks_per_node=$mpi_tasks_per_node (OMP_NUM_THREADS=$OMP_NUM_THREADS)"
 
-CMD=(python -u "$PROJECT_ROOT/label_from_graph.py" --slug "$SLUG" --alpha "$ALPHA" --provider "$PROVIDER")
+CMD=(python -u "$PROJECT_ROOT/scripts/label_from_graph.py" --slug "$SLUG" --alpha "$ALPHA" --provider "$PROVIDER")
 if [ -n "${TOP_N:-}" ]; then
     CMD+=(--top_n "$TOP_N")
 fi

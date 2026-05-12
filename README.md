@@ -25,3 +25,24 @@ Run the hooks across the repo with:
 ```bash
 pre-commit run --all-files
 ```
+
+## Biology server
+
+Start the prompt-preview backend and bundled circuit-tracer wrapper UI:
+
+```bash
+python -m biology_server --port 8041 --graph-file-dir data/ui_graphs
+```
+
+The equivalent script wrapper is:
+
+```bash
+python scripts/serve_biology_server.py --port 8041
+```
+
+Executable entry points live in `scripts/`; for example:
+
+```bash
+python scripts/generate_attribution_graph.py --prompt "The biological function of hemoglobin is to"
+python scripts/label_from_graph.py --slug <slug> --dry-run
+```
