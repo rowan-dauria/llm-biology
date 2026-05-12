@@ -121,6 +121,74 @@ def _read_graph_metadata(path: Path) -> dict[str, Any]:
         return json.load(handle)
 
 
+def _read_existing_qparams(path: Path) -> dict[str, Any]:
+    """Return the ``qParams`` block from an existing graph JSON, or ``{}``."""
+
+    if not path.exists():
+        return {}
+    try:
+        with path.open(encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    existing = payload.get("qParams")
+    return existing if isinstance(existing, dict) else {}
+
+
+def merge_qparams(
+    existing: dict[str, Any],
+    node_ids: set[str],
+    default_logit_id: str,
+) -> dict[str, Any]:
+    """Carry forward UI state across regenerations, dropping references to nodes
+    that no longer exist.
+
+    Supernodes use the ``[label, ...node_ids]`` convention; groups left with no
+    members after filtering are discarded.
+    """
+
+    raw_pinned = existing.get("pinnedIds", [])
+    pinned = (
+        [pid for pid in raw_pinned if isinstance(pid, str) and pid in node_ids]
+        if isinstance(raw_pinned, list)
+        else []
+    )
+
+    supernodes: list[list[str]] = []
+    raw_supernodes = existing.get("supernodes", [])
+    if isinstance(raw_supernodes, list):
+        for group in raw_supernodes:
+            if not isinstance(group, list) or not group:
+                continue
+            label = group[0]
+            if not isinstance(label, str):
+                continue
+            kept = [nid for nid in group[1:] if isinstance(nid, str) and nid in node_ids]
+            if kept:
+                supernodes.append([label, *kept])
+
+    clicked_raw = existing.get("clickedId")
+    clicked = (
+        clicked_raw
+        if isinstance(clicked_raw, str) and clicked_raw in node_ids
+        else default_logit_id
+    )
+
+    link_type_raw = existing.get("linkType", "both")
+    link_type = link_type_raw if isinstance(link_type_raw, str) else "both"
+
+    sg_pos_raw = existing.get("sg_pos", "")
+    sg_pos = sg_pos_raw if isinstance(sg_pos_raw, str) else ""
+
+    return {
+        "pinnedIds": pinned,
+        "supernodes": supernodes,
+        "linkType": link_type,
+        "clickedId": clicked,
+        "sg_pos": sg_pos,
+    }
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
@@ -172,6 +240,8 @@ def export_circuit_graph(
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    graph_path = out_dir / f"{slug}.json"
+    existing_qparams = _read_existing_qparams(graph_path)
 
     logit_id = logit_node_id(num_layers, target_token_id, len(prompt_tokens) - 1)
     nodes = [_feature_node_to_json(node) for node in feature_nodes]
@@ -207,13 +277,7 @@ def export_circuit_graph(
     }
     graph = {
         "metadata": metadata,
-        "qParams": {
-            "pinnedIds": [],
-            "supernodes": [],
-            "linkType": "both",
-            "clickedId": logit_id,
-            "sg_pos": "",
-        },
+        "qParams": merge_qparams(existing_qparams, node_ids, logit_id),
         "nodes": nodes,
         "links": [
             {"source": link.source, "target": link.target, "weight": link.weight}
@@ -222,7 +286,6 @@ def export_circuit_graph(
         ],
     }
 
-    graph_path = out_dir / f"{slug}.json"
     _write_json(graph_path, graph)
     write_graph_metadata(out_dir, metadata)
     if feature_examples:
@@ -236,8 +299,14 @@ def make_feature_example_payload(
     label: str,
     windows: list[dict[str, Any]],
     act_max: float | None = None,
+    top_logits: list[str] | None = None,
+    bottom_logits: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Create the minimal feature-example JSON consumed by the bundled frontend."""
+    """Create the minimal feature-example JSON consumed by the bundled frontend.
+
+    ``top_logits`` / ``bottom_logits`` are rendered as token chips in the UI's
+    "Token Predictions" panel; the frontend treats them as opaque strings.
+    """
 
     max_window_act = max((float(window.get("value", 0.0)) for window in windows), default=0.0)
     return {
@@ -246,8 +315,8 @@ def make_feature_example_payload(
         "label": label,
         "act_min": 0,
         "act_max": float(act_max if act_max is not None else max(max_window_act, 1.0)),
-        "top_logits": [],
-        "bottom_logits": [],
+        "top_logits": list(top_logits or []),
+        "bottom_logits": list(bottom_logits or []),
         "examples_quantiles": [
             {
                 "quantile_name": "Top activating windows",

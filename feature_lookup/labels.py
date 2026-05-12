@@ -81,6 +81,9 @@ def load_feature_labels(
     return out
 
 
+UNLABELLED_PREFIX = "[?] "
+
+
 def get_feature_label(
     labels: FeatureLabelMap,
     layer: int,
@@ -88,9 +91,13 @@ def get_feature_label(
     *,
     fallback: str | None = None,
 ) -> str:
-    """Return a label for a feature, falling back to ``L{layer} F{feature}``."""
+    """Return a label for a feature.
+
+    Unlabelled features get a ``[?] L{layer} F{feature}`` fallback so the UI
+    can distinguish them from deliberate placeholders at a glance.
+    """
 
     found = labels.get((layer, feature))
     if found is not None:
         return found.label
-    return fallback or f"L{layer} F{feature}"
+    return fallback or f"{UNLABELLED_PREFIX}L{layer} F{feature}"

@@ -12,6 +12,7 @@ from circuit_graph_export import (
     export_circuit_graph,
     feature_node_id,
     make_feature_example_payload,
+    merge_qparams,
     paired_feature_index,
 )
 
@@ -89,6 +90,101 @@ class CircuitGraphExportTests(unittest.TestCase):
             self.assertEqual(feature_payload["label"], "date token")
             example = feature_payload["examples_quantiles"][0]["examples"][0]
             self.assertEqual(example["train_token_ind"], 1)
+
+    def test_feature_example_payload_emits_logit_chips(self) -> None:
+        payload = make_feature_example_payload(
+            feature_index=1,
+            label="x",
+            windows=[],
+            top_logits=[" alpha", " beta"],
+            bottom_logits=[" omega"],
+        )
+        self.assertEqual(payload["top_logits"], [" alpha", " beta"])
+        self.assertEqual(payload["bottom_logits"], [" omega"])
+
+    def test_feature_example_payload_defaults_to_empty_logit_lists(self) -> None:
+        payload = make_feature_example_payload(feature_index=1, label="x", windows=[])
+        self.assertEqual(payload["top_logits"], [])
+        self.assertEqual(payload["bottom_logits"], [])
+
+    def test_merge_qparams_filters_stale_ids_and_keeps_state(self) -> None:
+        existing = {
+            "pinnedIds": ["2_100_0", "stale_node", 42],
+            "supernodes": [
+                ["meaningful group", "2_100_0", "stale_node"],
+                ["empty after filter", "stale_node"],
+                ["malformed"],
+                "not a list",
+            ],
+            "linkType": "input",
+            "clickedId": "stale_node",
+            "sg_pos": "12,34",
+        }
+        node_ids = {"2_100_0", "37_999_5"}
+        merged = merge_qparams(existing, node_ids, default_logit_id="37_999_5")
+
+        self.assertEqual(merged["pinnedIds"], ["2_100_0"])
+        self.assertEqual(merged["supernodes"], [["meaningful group", "2_100_0"]])
+        self.assertEqual(merged["linkType"], "input")
+        self.assertEqual(merged["clickedId"], "37_999_5")
+        self.assertEqual(merged["sg_pos"], "12,34")
+
+    def test_merge_qparams_preserves_valid_clicked_id(self) -> None:
+        existing = {"clickedId": "2_100_0"}
+        merged = merge_qparams(existing, {"2_100_0"}, default_logit_id="37_999_5")
+        self.assertEqual(merged["clickedId"], "2_100_0")
+
+    def test_merge_qparams_defaults_for_missing_fields(self) -> None:
+        merged = merge_qparams({}, set(), default_logit_id="37_999_5")
+        self.assertEqual(merged["pinnedIds"], [])
+        self.assertEqual(merged["supernodes"], [])
+        self.assertEqual(merged["linkType"], "both")
+        self.assertEqual(merged["clickedId"], "37_999_5")
+        self.assertEqual(merged["sg_pos"], "")
+
+    def test_export_preserves_qparams_across_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            feature_nodes = [
+                FeatureNode(layer=2, pos=1, feature=123, activation=4.5, clerp="x"),
+                FeatureNode(layer=12, pos=0, feature=42, activation=1.0, clerp="y"),
+            ]
+
+            def write(nodes: list[FeatureNode]) -> Path:
+                return export_circuit_graph(
+                    output_dir=tmp_path,
+                    slug="reuse",
+                    prompt="hi",
+                    prompt_tokens=["hi"],
+                    input_token_ids=[1],
+                    num_layers=36,
+                    feature_nodes=nodes,
+                    links=[],
+                    target_token_id=2,
+                    target_token_str=" out",
+                    target_token_prob=0.5,
+                )
+
+            graph_path = write(feature_nodes)
+            payload = json.loads(graph_path.read_text())
+            payload["qParams"]["pinnedIds"] = ["2_123_1", "12_42_0", "ghost_node"]
+            payload["qParams"]["supernodes"] = [
+                ["my group", "2_123_1", "12_42_0"],
+                ["ghost only", "ghost_node"],
+            ]
+            payload["qParams"]["clickedId"] = "2_123_1"
+            payload["qParams"]["linkType"] = "output"
+            graph_path.write_text(json.dumps(payload))
+
+            # Second run drops the second feature node; UI state for surviving
+            # IDs should carry over and stale references should be filtered.
+            write(feature_nodes[:1])
+            updated = json.loads(graph_path.read_text())
+            q = updated["qParams"]
+            self.assertEqual(q["pinnedIds"], ["2_123_1"])
+            self.assertEqual(q["supernodes"], [["my group", "2_123_1"]])
+            self.assertEqual(q["clickedId"], "2_123_1")
+            self.assertEqual(q["linkType"], "output")
 
     def test_graph_metadata_is_idempotent_by_slug(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

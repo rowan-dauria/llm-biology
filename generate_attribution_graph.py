@@ -11,6 +11,7 @@ import argparse
 import os
 import re
 import time
+from collections import defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,7 @@ DEFAULT_LAYERS = [2, NUM_LAYERS // 3, (2 * NUM_LAYERS) // 3, NUM_LAYERS - 3]
 DEFAULT_PROMPT = "The biological function of hemoglobin is to"
 DEFAULT_MAX_FEATURE_NODES = 300
 DEFAULT_EDGE_TOP_K = 20
+DEFAULT_LOGITS_TOP_K = 10
 
 CACHE_DIR = os.getenv("HF_HOME")
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -330,6 +332,52 @@ def feature_nodes_from_selected(selected: list[SelectedFeature]) -> list[Feature
     ]
 
 
+def compute_feature_logits(
+    *,
+    selected: list[SelectedFeature],
+    transcoders: dict[int, SingleLayerTranscoder],
+    unembed: torch.Tensor,
+    tokenizer: PreTrainedTokenizerBase,
+    top_k: int = DEFAULT_LOGITS_TOP_K,
+) -> dict[tuple[int, int], tuple[list[str], list[str]]]:
+    """Project each selected feature's decoder vector through the unembedding.
+
+    Ignores the final LayerNorm, so these are an approximation of the per-feature
+    direct logit attribution — useful as a quick "what does this feature push?"
+    summary in the UI, not a faithful contribution measure.
+    """
+
+    if top_k <= 0:
+        return {}
+
+    unique_by_layer: dict[int, list[int]] = defaultdict(list)
+    seen: set[tuple[int, int]] = set()
+    for feature in selected:
+        key = (feature.layer, feature.feature)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_by_layer[feature.layer].append(feature.feature)
+
+    out: dict[tuple[int, int], tuple[list[str], list[str]]] = {}
+    for layer, feature_ids in unique_by_layer.items():
+        decoder = transcoders[layer].W_dec
+        idx = torch.tensor(feature_ids, dtype=torch.long, device=decoder.device)
+        rows = decoder.index_select(0, idx).to(unembed.dtype)
+        logits = rows @ unembed.t()
+        cap = min(top_k, logits.shape[-1])
+        top_vals, top_idx = logits.topk(cap, dim=-1)
+        _, bot_idx = logits.topk(cap, dim=-1, largest=False)
+        del top_vals
+        top_idx_cpu = top_idx.detach().cpu().tolist()
+        bot_idx_cpu = bot_idx.detach().cpu().tolist()
+        for feature_id, top_row, bot_row in zip(feature_ids, top_idx_cpu, bot_idx_cpu, strict=True):
+            top_tokens = [tokenizer.decode([int(token_id)]) for token_id in top_row]
+            bot_tokens = [tokenizer.decode([int(token_id)]) for token_id in bot_row]
+            out[(layer, feature_id)] = (top_tokens, bot_tokens)
+    return out
+
+
 def window_to_frontend_example(rendered: str, value: float) -> dict[str, Any]:
     if "<<" in rendered and ">>" in rendered:
         before, rest = rendered.split("<<", 1)
@@ -356,6 +404,7 @@ def build_feature_examples(
     selected: list[SelectedFeature],
     labels: FeatureLabelMap,
     tokenizer: PreTrainedTokenizerBase,
+    feature_logits: dict[tuple[int, int], tuple[list[str], list[str]]] | None = None,
 ) -> dict[int, dict[str, Any]]:
     """Build local feature-example files from saved top-K windows when available."""
 
@@ -397,11 +446,18 @@ def build_feature_examples(
             ]
             paired = paired_feature_index(layer, feature_id)
             label = get_feature_label(labels, layer, feature_id)
+            top_tokens, bot_tokens = (
+                feature_logits.get((layer, feature_id), ([], []))
+                if feature_logits is not None
+                else ([], [])
+            )
             examples[paired] = make_feature_example_payload(
                 feature_index=paired,
                 label=label,
                 windows=frontend_windows,
                 act_max=max((window.value for window in active_windows), default=1.0),
+                top_logits=top_tokens,
+                bottom_logits=bot_tokens,
             )
 
     print(f"[INFO] wrote feature examples for {len(examples)} features")
@@ -532,10 +588,21 @@ def main() -> None:
             handle.remove()
 
     all_links = seed_links + circuit_links
+    with timed("Per-feature direct-logit projection"), torch.no_grad():
+        output_embeddings = model.get_output_embeddings()
+        if output_embeddings is None:
+            raise RuntimeError("model has no output embeddings; cannot project logits")
+        feature_logits = compute_feature_logits(
+            selected=selected,
+            transcoders=transcoders,
+            unembed=output_embeddings.weight,
+            tokenizer=tokenizer,
+        )
     feature_examples = build_feature_examples(
         selected=selected,
         labels=labels,
         tokenizer=tokenizer,
+        feature_logits=feature_logits,
     )
     graph_path = export_circuit_graph(
         output_dir=args.graph_file_dir,

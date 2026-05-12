@@ -122,16 +122,19 @@ class PatchGraphLabelsTests(unittest.TestCase):
         self.assertEqual(counts["examples_updated"], 0)
         self.assertEqual(counts["examples_missing"], 1)
 
-    def test_falls_back_to_l_layer_f_feature_when_no_label(self) -> None:
+    def test_falls_back_to_unlabelled_prefix_when_no_label(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             graph_path = Path(tmp) / "graph.json"
             payload = self._graph_payload()
-            # Force the clerp to something stale so a fallback overwrite is observable.
+            # Seed one node with the new fallback (so no rewrite) and another with
+            # a stale clerp (so the fallback overwrite is observable).
             nodes = payload["nodes"]
             assert isinstance(nodes, list)
             for node in nodes:
                 if node.get("node_id") == "2_100_0":
                     node["clerp"] = "stale"
+                if node.get("node_id") == "12_500_3":
+                    node["clerp"] = "[?] L12 F500"
             _write_graph(graph_path, payload)
 
             counts = patch_graph(graph_path, {})
@@ -140,8 +143,8 @@ class PatchGraphLabelsTests(unittest.TestCase):
             self.assertEqual(counts["clerp_updated"], 1)
             updated = json.loads(graph_path.read_text())
             clerps_by_id = {node["node_id"]: node["clerp"] for node in updated["nodes"]}
-            self.assertEqual(clerps_by_id["2_100_0"], "L2 F100")
-            self.assertEqual(clerps_by_id["12_500_3"], "L12 F500")
+            self.assertEqual(clerps_by_id["2_100_0"], "[?] L2 F100")
+            self.assertEqual(clerps_by_id["12_500_3"], "[?] L12 F500")
 
 
 if __name__ == "__main__":
