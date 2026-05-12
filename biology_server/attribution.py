@@ -609,7 +609,14 @@ class BiologyAttributionRunner:
     ) -> tuple[Any, list[int], list[str]]:
         if self._device is None:
             raise RuntimeError("runner device is not loaded")
-        inputs = tokenizer(prompt, return_tensors="pt").to(self._device)
+        text = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+        inputs = tokenizer([text], return_tensors="pt").to(self._device)
+
         input_token_ids = [
             int(token_id) for token_id in inputs.input_ids[0].detach().cpu().tolist()
         ]
