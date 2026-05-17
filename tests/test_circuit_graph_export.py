@@ -134,6 +134,20 @@ class CircuitGraphExportTests(unittest.TestCase):
         merged = merge_qparams(existing, {"2_100_0"}, default_logit_id="37_999_5")
         self.assertEqual(merged["clickedId"], "2_100_0")
 
+    def test_merge_qparams_accepts_ui_serialized_pin_state(self) -> None:
+        existing = {
+            "pinnedIds": "2_100_0,12_42_1,stale_node",
+            "supernodes": '[["saved group", "2_100_0", "stale_node"]]',
+        }
+        merged = merge_qparams(
+            existing,
+            {"2_100_0", "12_42_1", "37_999_5"},
+            default_logit_id="37_999_5",
+        )
+
+        self.assertEqual(merged["pinnedIds"], ["2_100_0", "12_42_1"])
+        self.assertEqual(merged["supernodes"], [["saved group", "2_100_0"]])
+
     def test_merge_qparams_defaults_for_missing_fields(self) -> None:
         merged = merge_qparams({}, set(), default_logit_id="37_999_5")
         self.assertEqual(merged["pinnedIds"], [])

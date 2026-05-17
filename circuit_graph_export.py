@@ -148,6 +148,8 @@ def merge_qparams(
     """
 
     raw_pinned = existing.get("pinnedIds", [])
+    if isinstance(raw_pinned, str):
+        raw_pinned = [item for item in raw_pinned.split(",") if item]
     pinned = (
         [pid for pid in raw_pinned if isinstance(pid, str) and pid in node_ids]
         if isinstance(raw_pinned, list)
@@ -156,6 +158,11 @@ def merge_qparams(
 
     supernodes: list[list[str]] = []
     raw_supernodes = existing.get("supernodes", [])
+    if isinstance(raw_supernodes, str) and raw_supernodes:
+        try:
+            raw_supernodes = json.loads(raw_supernodes)
+        except json.JSONDecodeError:
+            raw_supernodes = []
     if isinstance(raw_supernodes, list):
         for group in raw_supernodes:
             if not isinstance(group, list) or not group:
