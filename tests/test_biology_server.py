@@ -175,6 +175,79 @@ class BiologyServerTests(unittest.TestCase):
             graph = client.get("/graph_data/demo.json")
             self.assertEqual(graph["qParams"], {"clickedId": "changed"})
 
+    def test_upload_graph_writes_graph_and_metadata(self) -> None:
+        with run_test_server(FakeRunner()) as client:
+            graph = upload_graph_payload(slug="saved graph")
+            response = client.post(
+                "/api/upload_graph",
+                {
+                    "graph": graph,
+                    "slug": "Edited Graph",
+                    "filename": "ignored.json",
+                },
+                expected_status=201,
+            )
+
+            self.assertEqual(response["slug"], "edited-graph")
+            served = client.get("/graph_data/edited-graph.json")
+            self.assertEqual(served["metadata"]["slug"], "edited-graph")
+            self.assertEqual(served["qParams"], {"clickedId": "37_2_0"})
+            metadata = client.get("/data/graph-metadata.json")
+            self.assertEqual([entry["slug"] for entry in metadata["graphs"]], ["edited-graph"])
+
+    def test_upload_graph_uses_metadata_slug_without_override(self) -> None:
+        with run_test_server(FakeRunner()) as client:
+            response = client.post(
+                "/api/upload_graph",
+                {"graph": upload_graph_payload(slug="Saved Graph")},
+                expected_status=201,
+            )
+
+            self.assertEqual(response["slug"], "saved-graph")
+            self.assertEqual(
+                client.get("/graph_data/saved-graph.json")["metadata"]["slug"], "saved-graph"
+            )
+
+    def test_upload_graph_rejects_invalid_payload(self) -> None:
+        with run_test_server(FakeRunner()) as client:
+            response = client.post(
+                "/api/upload_graph",
+                {"graph": {"metadata": {"slug": "bad"}, "nodes": [], "links": []}},
+                expected_status=400,
+            )
+
+            self.assertIn("graph.metadata.prompt_tokens", response["error"])
+
+
+def upload_graph_payload(*, slug: str) -> dict[str, Any]:
+    return {
+        "metadata": {
+            "slug": slug,
+            "scan": "./data/features/qwen3-4b-transcoders",
+            "transcoder_list": [],
+            "prompt_tokens": ["hello"],
+            "prompt": "hello",
+            "schema_version": 1,
+        },
+        "qParams": {"clickedId": "37_2_0"},
+        "nodes": [
+            {
+                "node_id": "37_2_0",
+                "feature": 2,
+                "layer": "37",
+                "ctx_idx": 0,
+                "feature_type": "logit",
+                "token_prob": 0.75,
+                "is_target_logit": True,
+                "run_idx": 0,
+                "reverse_ctx_idx": 0,
+                "jsNodeId": "L_2-0",
+                "clerp": 'Output " world" (p=0.750)',
+            }
+        ],
+        "links": [],
+    }
+
 
 class HttpTestClient:
     def __init__(self, port: int) -> None:

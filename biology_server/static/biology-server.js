@@ -4,8 +4,10 @@
     slug: document.querySelector('#slug'),
     maxFeatureNodes: document.querySelector('#max-feature-nodes'),
     edgeTopK: document.querySelector('#edge-top-k'),
+    uploadFile: document.querySelector('#upload-file'),
     previewButton: document.querySelector('#preview-button'),
     generateButton: document.querySelector('#generate-button'),
+    uploadButton: document.querySelector('#upload-button'),
     status: document.querySelector('#status'),
     targetToken: document.querySelector('#target-token'),
     topTokens: document.querySelector('#top-tokens'),
@@ -18,6 +20,10 @@
 
   els.previewButton.addEventListener('click', previewPrompt)
   els.generateButton.addEventListener('click', generateGraph)
+  els.uploadFile.addEventListener('change', () => {
+    els.uploadButton.disabled = !selectedUploadFile()
+  })
+  els.uploadButton.addEventListener('click', uploadGraph)
 
   async function previewPrompt() {
     setBusy(true)
@@ -86,7 +92,49 @@
     }
   }
 
+  async function uploadGraph() {
+    const file = selectedUploadFile()
+    if (!file) {
+      setStatus('Choose a graph JSON file')
+      return
+    }
+
+    setBusy(true)
+    activeJobId = null
+    preview = null
+    els.generateButton.disabled = true
+    els.jobLog.textContent = ''
+    setStatus('Uploading graph...')
+
+    try {
+      let graph
+      try {
+        graph = JSON.parse(await file.text())
+      } catch (_err) {
+        throw new Error('Upload file must be valid JSON')
+      }
+
+      const uploaded = await postJson('/api/upload_graph', {
+        graph,
+        slug: cleanValue(els.slug.value),
+        filename: file.name,
+      })
+      renderPreview(null)
+      setStatus(`Uploaded: ${uploaded.slug}`)
+      renderGraph(uploaded.slug)
+    } catch (err) {
+      renderError(err)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   function renderPreview(data) {
+    if (!data) {
+      els.targetToken.textContent = ''
+      els.topTokens.innerHTML = ''
+      return
+    }
     const token = data.target_token
     els.targetToken.textContent = `Target: ${JSON.stringify(token.text)}  id=${token.id}  p=${formatProb(token.prob)}`
     els.topTokens.innerHTML = ''
@@ -144,8 +192,13 @@
     return trimmed ? trimmed : undefined
   }
 
+  function selectedUploadFile() {
+    return els.uploadFile.files && els.uploadFile.files[0]
+  }
+
   function setBusy(isBusy) {
     els.previewButton.disabled = isBusy
+    els.uploadButton.disabled = isBusy || !selectedUploadFile()
   }
 
   function setStatus(text) {

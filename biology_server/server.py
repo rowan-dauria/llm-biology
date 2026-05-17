@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import contextlib
+import copy
 import gzip
 import http.server
 import json
@@ -33,7 +34,9 @@ from biology_server.attribution import (
     GraphResult,
     PreviewResult,
     parse_layers,
+    slugify,
 )
+from circuit_graph_export import write_graph_metadata
 
 logger = logging.getLogger(__name__)
 logger.propagate = False
@@ -143,6 +146,27 @@ class BiologyApp:
             self._futures[job_id] = self._executor.submit(self._run_graph_job, job_id)
             self._trim_jobs()
         return job_to_json(job)
+
+    def upload_graph(self, payload: dict[str, Any]) -> dict[str, Any]:
+        raw_graph = payload.get("graph")
+        if not isinstance(raw_graph, dict):
+            raise RequestError(400, "graph must be an object")
+
+        slug = upload_slug(
+            raw_graph,
+            slug_override=optional_string(payload, "slug"),
+            filename=optional_string(payload, "filename"),
+        )
+        graph, metadata = normalize_uploaded_graph(raw_graph, slug)
+        graph_path = self.graph_file_dir / f"{slug}.json"
+        write_json(graph_path, graph)
+        write_graph_metadata(self.graph_file_dir, metadata)
+
+        return {
+            "slug": slug,
+            "graph_url": f"/graph_data/{slug}.json",
+            "metadata": metadata,
+        }
 
     def get_job(self, job_id: str) -> dict[str, Any]:
         with self._lock:
@@ -257,6 +281,9 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
             return
         if self.command == "POST" and path == "/api/graphs":
             self._send_json(self.server.app.enqueue_graph(self._read_json_body()), status=202)
+            return
+        if self.command == "POST" and path == "/api/upload_graph":
+            self._send_json(self.server.app.upload_graph(self._read_json_body()), status=201)
             return
         if self.command == "GET" and path.startswith("/api/jobs/"):
             job_id = path.removeprefix("/api/jobs/").strip("/")
@@ -441,6 +468,64 @@ def safe_join(root: Path, rel_path: str) -> Path:
     if not path.is_relative_to(root):
         raise RequestError(403, "path escapes served directory")
     return path
+
+
+def upload_slug(
+    graph: dict[str, Any],
+    *,
+    slug_override: str | None,
+    filename: str | None,
+) -> str:
+    raw_slug = slug_override
+    metadata = graph.get("metadata")
+    if raw_slug is None and isinstance(metadata, dict):
+        metadata_slug = metadata.get("slug")
+        if isinstance(metadata_slug, str):
+            raw_slug = metadata_slug
+    if raw_slug is None and filename:
+        raw_slug = Path(filename).stem
+
+    slug = slugify(raw_slug or "uploaded-graph").strip(".")
+    return slug or "uploaded-graph"
+
+
+def normalize_uploaded_graph(
+    raw_graph: dict[str, Any],
+    slug: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    graph: dict[str, Any] = copy.deepcopy(raw_graph)
+
+    metadata = graph.get("metadata")
+    if not isinstance(metadata, dict):
+        raise RequestError(400, "graph.metadata must be an object")
+
+    prompt_tokens = metadata.get("prompt_tokens")
+    if not isinstance(prompt_tokens, list) or not all(
+        isinstance(token, str) for token in prompt_tokens
+    ):
+        raise RequestError(400, "graph.metadata.prompt_tokens must be a list of strings")
+
+    if not isinstance(graph.get("nodes"), list):
+        raise RequestError(400, "graph.nodes must be a list")
+    if not isinstance(graph.get("links"), list):
+        raise RequestError(400, "graph.links must be a list")
+
+    qparams = graph.get("qParams", {})
+    if not isinstance(qparams, dict):
+        raise RequestError(400, "graph.qParams must be an object")
+
+    normalized_metadata = dict(metadata)
+    normalized_metadata["slug"] = slug
+    graph["metadata"] = normalized_metadata
+    graph["qParams"] = qparams
+    return graph, normalized_metadata
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
 
 
 def require_nonempty_string(payload: dict[str, Any], key: str) -> str:

@@ -67,6 +67,11 @@ input {
   width: 96px;
 }
 
+#upload-file {
+  width: 260px;
+  padding: 3px 8px;
+}
+
 button {
   height: 32px;
   border: 1px solid #1f2328;
