@@ -1,9 +1,7 @@
-"""Refresh ``clerp`` on a graph JSON (and ``label`` on per-feature sidecars).
+"""Refresh ``clerp`` on a graph JSON.
 
 Reads a frontend graph JSON, joins against the per-layer labels store, and
-overwrites ``clerp`` for every transcoder feature node. Then walks the
-per-feature example JSONs under ``features/<scan_dir>/`` and updates the
-``label`` field where the sidecar exists.
+overwrites ``clerp`` for every transcoder feature node.
 
 Pure-logic module: no torch, no transformers, no network.
 """
@@ -14,7 +12,6 @@ import argparse
 import json
 import os
 import tempfile
-from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -35,12 +32,8 @@ except ImportError:
         load_feature_labels,
     )
 
-DEFAULT_SCAN_DIR = "qwen3-4b-transcoders"
+DEFAULT_SCAN_DIR = "qwen3-4b"
 DEFAULT_GRAPH_DIR = Path(__file__).parent.parent / "data" / "ui_graphs"
-
-
-def _cantor_pair(x: int, y: int) -> int:
-    return (x + y) * (x + y + 1) // 2 + y
 
 
 def _atomic_write_json(path: Path, payload: Any) -> None:
@@ -83,53 +76,31 @@ def _patch_graph_nodes(
     return updated, touched
 
 
-def _patch_feature_examples(
-    feature_dir: Path,
-    touched: Iterable[tuple[int, int]],
-    labels: FeatureLabelMap,
-) -> tuple[int, int]:
-    updated = 0
-    missing = 0
-    for layer, feature in touched:
-        path = feature_dir / f"{_cantor_pair(layer, feature)}.json"
-        if not path.exists():
-            missing += 1
-            continue
-        with path.open(encoding="utf-8") as handle:
-            payload = json.load(handle)
-        new_label = get_feature_label(labels, layer, feature)
-        if payload.get("label") != new_label:
-            payload["label"] = new_label
-            _atomic_write_json(path, payload)
-            updated += 1
-    return updated, missing
-
-
 def patch_graph(
     graph_path: Path,
     labels: FeatureLabelMap,
     *,
     scan_dir: str = DEFAULT_SCAN_DIR,
 ) -> dict[str, int]:
-    """Patch ``clerp`` in the graph JSON and ``label`` in per-feature sidecars.
+    """Patch ``clerp`` in the graph JSON.
 
-    Returns ``{clerp_updated, examples_updated, examples_missing}``.
+    Returns ``{clerp_updated, examples_updated, examples_missing}``. The sidecar
+    counts are retained as zero-valued compatibility fields; feature-detail
+    sidecars are schema-minimal and are no longer treated as label stores.
     """
+    del scan_dir
 
     with graph_path.open(encoding="utf-8") as handle:
         graph = json.load(handle)
 
-    clerp_updated, touched = _patch_graph_nodes(graph, labels)
+    clerp_updated, _ = _patch_graph_nodes(graph, labels)
     if clerp_updated:
         _atomic_write_json(graph_path, graph)
 
-    feature_dir = graph_path.parent / "features" / scan_dir
-    examples_updated, examples_missing = _patch_feature_examples(feature_dir, touched, labels)
-
     return {
         "clerp_updated": clerp_updated,
-        "examples_updated": examples_updated,
-        "examples_missing": examples_missing,
+        "examples_updated": 0,
+        "examples_missing": 0,
     }
 
 

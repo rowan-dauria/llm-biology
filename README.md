@@ -45,4 +45,11 @@ Executable entry points live in `scripts/`; for example:
 ```bash
 python scripts/generate_attribution_graph.py --prompt "The biological function of hemoglobin is to"
 python scripts/label_from_graph.py --slug <slug> --dry-run
+python scripts/check_neuronpedia_exports.py --graph-dir data/ui_graphs
 ```
+
+For Neuronpedia upload targets, `generate_attribution_graph.py` and
+`python -m biology_server` accept `--scan`, `--feature-dir-name`,
+`--feature-json-base-url`, `--neuronpedia-source-set`, and
+`--neuronpedia-lorsa-source-set`. The checker is read-only and reports schema
+errors without rewriting existing graph artifacts.

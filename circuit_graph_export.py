@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-LOCAL_SCAN = "./data/features/qwen3-4b-transcoders"
-LOCAL_FEATURE_DIR = "qwen3-4b-transcoders"
+LOCAL_SCAN = "qwen3-4b"
+LOCAL_FEATURE_DIR = LOCAL_SCAN
+LOCAL_EXTRA_QPARAMS = {
+    "clerps",
+    "densityThreshold",
+    "gridsnap",
+    "hiddenIds",
+    "pruningThreshold",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,13 +195,18 @@ def merge_qparams(
     sg_pos_raw = existing.get("sg_pos", "")
     sg_pos = sg_pos_raw if isinstance(sg_pos_raw, str) else ""
 
-    return {
+    merged: dict[str, Any] = {
         "pinnedIds": pinned,
         "supernodes": supernodes,
         "linkType": link_type,
         "clickedId": clicked,
         "sg_pos": sg_pos,
     }
+    for key in LOCAL_EXTRA_QPARAMS:
+        value = existing.get(key)
+        if value is not None:
+            merged[key] = value
+    return merged
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -227,6 +240,22 @@ def write_feature_examples(
         _write_json(feature_dir / f"{feature_index}.json", payload)
 
 
+def build_feature_details_metadata(
+    *,
+    feature_json_base_url: str | None = None,
+    neuronpedia_source_set: str | None = None,
+    neuronpedia_lorsa_source_set: str | None = None,
+) -> dict[str, str]:
+    details: dict[str, str] = {}
+    if feature_json_base_url:
+        details["feature_json_base_url"] = feature_json_base_url
+    if neuronpedia_source_set:
+        details["neuronpedia_source_set"] = neuronpedia_source_set
+    if neuronpedia_lorsa_source_set:
+        details["neuronpedia_lorsa_source_set"] = neuronpedia_lorsa_source_set
+    return details
+
+
 def export_circuit_graph(
     *,
     output_dir: Path | str,
@@ -242,6 +271,11 @@ def export_circuit_graph(
     target_token_prob: float,
     feature_examples: dict[int, dict[str, Any]] | None = None,
     scan: str = LOCAL_SCAN,
+    feature_dir_name: str | None = None,
+    feature_json_base_url: str | None = None,
+    neuronpedia_source_set: str | None = None,
+    neuronpedia_lorsa_source_set: str | None = None,
+    node_threshold: float | None = None,
 ) -> Path:
     """Write a graph JSON and metadata file for circuit-tracer's local server."""
 
@@ -279,9 +313,21 @@ def export_circuit_graph(
         "transcoder_list": [],
         "prompt_tokens": prompt_tokens,
         "prompt": prompt,
-        "node_threshold": None,
         "schema_version": 1,
     }
+    if node_threshold is not None:
+        threshold = float(node_threshold)
+        if math.isfinite(threshold):
+            metadata["node_threshold"] = threshold
+
+    feature_details = build_feature_details_metadata(
+        feature_json_base_url=feature_json_base_url,
+        neuronpedia_source_set=neuronpedia_source_set,
+        neuronpedia_lorsa_source_set=neuronpedia_lorsa_source_set,
+    )
+    if feature_details:
+        metadata["feature_details"] = feature_details
+
     graph = {
         "metadata": metadata,
         "qParams": merge_qparams(existing_qparams, node_ids, logit_id),
@@ -296,38 +342,41 @@ def export_circuit_graph(
     _write_json(graph_path, graph)
     write_graph_metadata(out_dir, metadata)
     if feature_examples:
-        write_feature_examples(out_dir, feature_examples)
+        write_feature_examples(out_dir, feature_examples, feature_dir_name=feature_dir_name or scan)
     return graph_path
 
 
 def make_feature_example_payload(
     *,
     feature_index: int,
-    label: str,
+    label: str | None = None,
     windows: list[dict[str, Any]],
     act_max: float | None = None,
     top_logits: list[str] | None = None,
     bottom_logits: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Create the minimal feature-example JSON consumed by the bundled frontend.
+    """Create the minimal Neuronpedia feature-details JSON.
 
     ``top_logits`` / ``bottom_logits`` are rendered as token chips in the UI's
     "Token Predictions" panel; the frontend treats them as opaque strings.
     """
 
-    max_window_act = max((float(window.get("value", 0.0)) for window in windows), default=0.0)
+    del label, act_max
+    schema_windows = [
+        {
+            "tokens": list(window.get("tokens", [])),
+            "tokens_acts_list": list(window.get("tokens_acts_list", [])),
+        }
+        for window in windows
+    ]
     return {
-        "feature": feature_index,
-        "featureIndex": feature_index,
-        "label": label,
-        "act_min": 0,
-        "act_max": float(act_max if act_max is not None else max(max_window_act, 1.0)),
+        "index": feature_index,
         "top_logits": list(top_logits or []),
         "bottom_logits": list(bottom_logits or []),
         "examples_quantiles": [
             {
                 "quantile_name": "Top activating windows",
-                "examples": windows,
+                "examples": schema_windows,
             }
         ],
     }

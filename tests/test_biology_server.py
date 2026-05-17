@@ -71,13 +71,19 @@ class FakeRunner:
         graph = {
             "metadata": {
                 "slug": graph_slug,
-                "scan": "./data/features/qwen3-4b-transcoders",
+                "scan": "qwen3-4b",
                 "transcoder_list": [],
                 "prompt_tokens": ["hello"],
                 "prompt": prompt,
                 "schema_version": 1,
             },
-            "qParams": {"clickedId": "37_2_0"},
+            "qParams": {
+                "pinnedIds": [],
+                "supernodes": [],
+                "linkType": "both",
+                "clickedId": "37_2_0",
+                "sg_pos": "",
+            },
             "nodes": [
                 {
                     "node_id": "37_2_0",
@@ -171,9 +177,29 @@ class BiologyServerTests(unittest.TestCase):
             )
             client.wait_for_job(job["job_id"])
 
-            client.post("/save_graph/demo", {"qParams": {"clickedId": "changed"}})
+            client.post(
+                "/save_graph/demo",
+                {
+                    "qParams": {
+                        "clickedId": "37_2_0",
+                        "pinnedIds": ["37_2_0", "missing"],
+                        "linkType": "input",
+                        "pruningThreshold": 0.5,
+                    }
+                },
+            )
             graph = client.get("/graph_data/demo.json")
-            self.assertEqual(graph["qParams"], {"clickedId": "changed"})
+            self.assertEqual(
+                graph["qParams"],
+                {
+                    "pinnedIds": ["37_2_0"],
+                    "supernodes": [],
+                    "linkType": "input",
+                    "clickedId": "37_2_0",
+                    "sg_pos": "",
+                    "pruningThreshold": 0.5,
+                },
+            )
 
     def test_upload_graph_writes_graph_and_metadata(self) -> None:
         with run_test_server(FakeRunner()) as client:
@@ -191,7 +217,16 @@ class BiologyServerTests(unittest.TestCase):
             self.assertEqual(response["slug"], "edited-graph")
             served = client.get("/graph_data/edited-graph.json")
             self.assertEqual(served["metadata"]["slug"], "edited-graph")
-            self.assertEqual(served["qParams"], {"clickedId": "37_2_0"})
+            self.assertEqual(
+                served["qParams"],
+                {
+                    "pinnedIds": [],
+                    "supernodes": [],
+                    "linkType": "both",
+                    "clickedId": "37_2_0",
+                    "sg_pos": "",
+                },
+            )
             metadata = client.get("/data/graph-metadata.json")
             self.assertEqual([entry["slug"] for entry in metadata["graphs"]], ["edited-graph"])
 
@@ -223,7 +258,7 @@ def upload_graph_payload(*, slug: str) -> dict[str, Any]:
     return {
         "metadata": {
             "slug": slug,
-            "scan": "./data/features/qwen3-4b-transcoders",
+            "scan": "qwen3-4b",
             "transcoder_list": [],
             "prompt_tokens": ["hello"],
             "prompt": "hello",

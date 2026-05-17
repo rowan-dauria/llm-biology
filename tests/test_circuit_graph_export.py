@@ -4,6 +4,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
+
+import jsonschema
 
 from circuit_graph_export import (
     FeatureNode,
@@ -16,8 +19,20 @@ from circuit_graph_export import (
     paired_feature_index,
 )
 
+SCHEMA_DIR = Path(__file__).resolve().parents[1] / "data" / "neuronpedia-schemas"
+
 
 class CircuitGraphExportTests(unittest.TestCase):
+    def assertValidSchema(self, payload: Any, schema_name: str) -> None:
+        schema_path = SCHEMA_DIR / schema_name
+        with schema_path.open(encoding="utf-8") as handle:
+            schema = json.load(handle)
+        errors = sorted(
+            jsonschema.Draft7Validator(schema).iter_errors(payload),
+            key=lambda error: list(error.path),
+        )
+        self.assertEqual(errors, [])
+
     def test_export_circuit_graph_writes_valid_schema_and_examples(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -54,6 +69,7 @@ class CircuitGraphExportTests(unittest.TestCase):
                             "tokens_acts_list": [0.0, 1.2, 0.0],
                             "train_token_ind": 1,
                             "is_repeated_datapoint": False,
+                            "value": 1.2,
                         }
                     ],
                 )
@@ -72,24 +88,40 @@ class CircuitGraphExportTests(unittest.TestCase):
                 target_token_str=" target",
                 target_token_prob=0.42,
                 feature_examples=examples,
+                feature_json_base_url="https://example.com/features",
+                neuronpedia_source_set="qwen3-4b-transcoders",
             )
 
             graph = json.loads(graph_path.read_text())
             self.assertEqual(graph["metadata"]["slug"], "demo")
-            self.assertEqual(graph["metadata"]["scan"], "./data/features/qwen3-4b-transcoders")
+            self.assertEqual(graph["metadata"]["scan"], "qwen3-4b")
+            self.assertNotIn("node_threshold", graph["metadata"])
+            self.assertEqual(
+                graph["metadata"]["feature_details"],
+                {
+                    "feature_json_base_url": "https://example.com/features",
+                    "neuronpedia_source_set": "qwen3-4b-transcoders",
+                },
+            )
             self.assertEqual(graph["qParams"]["clickedId"], "37_999_2")
             self.assertTrue(any(node["clerp"] == "date token" for node in graph["nodes"]))
+            self.assertValidSchema(graph, "attribution-graph.json")
 
             node_ids = {node["node_id"] for node in graph["nodes"]}
             for link in graph["links"]:
                 self.assertIn(link["source"], node_ids)
                 self.assertIn(link["target"], node_ids)
 
-            feature_path = tmp_path / "features" / "qwen3-4b-transcoders" / f"{paired}.json"
+            feature_path = tmp_path / "features" / "qwen3-4b" / f"{paired}.json"
             feature_payload = json.loads(feature_path.read_text())
-            self.assertEqual(feature_payload["label"], "date token")
+            self.assertEqual(
+                set(feature_payload),
+                {"index", "top_logits", "bottom_logits", "examples_quantiles"},
+            )
+            self.assertEqual(feature_payload["index"], paired)
             example = feature_payload["examples_quantiles"][0]["examples"][0]
-            self.assertEqual(example["train_token_ind"], 1)
+            self.assertEqual(set(example), {"tokens", "tokens_acts_list"})
+            self.assertValidSchema(feature_payload, "feature-details.json")
 
     def test_feature_example_payload_emits_logit_chips(self) -> None:
         payload = make_feature_example_payload(
@@ -99,6 +131,7 @@ class CircuitGraphExportTests(unittest.TestCase):
             top_logits=[" alpha", " beta"],
             bottom_logits=[" omega"],
         )
+        self.assertEqual(payload["index"], 1)
         self.assertEqual(payload["top_logits"], [" alpha", " beta"])
         self.assertEqual(payload["bottom_logits"], [" omega"])
 
@@ -119,6 +152,8 @@ class CircuitGraphExportTests(unittest.TestCase):
             "linkType": "input",
             "clickedId": "stale_node",
             "sg_pos": "12,34",
+            "clerps": '[["2_100_0", "label"]]',
+            "pruningThreshold": None,
         }
         node_ids = {"2_100_0", "37_999_5"}
         merged = merge_qparams(existing, node_ids, default_logit_id="37_999_5")
@@ -128,6 +163,8 @@ class CircuitGraphExportTests(unittest.TestCase):
         self.assertEqual(merged["linkType"], "input")
         self.assertEqual(merged["clickedId"], "37_999_5")
         self.assertEqual(merged["sg_pos"], "12,34")
+        self.assertEqual(merged["clerps"], '[["2_100_0", "label"]]')
+        self.assertNotIn("pruningThreshold", merged)
 
     def test_merge_qparams_preserves_valid_clicked_id(self) -> None:
         existing = {"clickedId": "2_100_0"}

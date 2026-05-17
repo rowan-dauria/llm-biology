@@ -172,6 +172,7 @@ dependencies:
       - importlib-resources==6.5.2
       - jaxtyping==0.3.4
       - joblib==1.5.3
+      - jsonschema==4.25.0
       - lxml==6.0.2
       - markdown-it-py==4.0.0
       - mdurl==0.1.2
