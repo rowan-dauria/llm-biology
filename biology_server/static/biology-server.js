@@ -8,6 +8,7 @@
     previewButton: document.querySelector('#preview-button'),
     generateButton: document.querySelector('#generate-button'),
     uploadButton: document.querySelector('#upload-button'),
+    saveButton: document.querySelector('#save-button'),
     status: document.querySelector('#status'),
     targetToken: document.querySelector('#target-token'),
     topTokens: document.querySelector('#top-tokens'),
@@ -17,6 +18,7 @@
 
   let preview = null
   let activeJobId = null
+  let currentSlug = null
 
   els.previewButton.addEventListener('click', previewPrompt)
   els.generateButton.addEventListener('click', generateGraph)
@@ -24,6 +26,10 @@
     els.uploadButton.disabled = !selectedUploadFile()
   })
   els.uploadButton.addEventListener('click', uploadGraph)
+  els.saveButton.addEventListener('click', saveGraph)
+
+  const initialSlug = util.params.get('slug')
+  if (initialSlug) renderGraph(initialSlug)
 
   async function previewPrompt() {
     setBusy(true)
@@ -129,6 +135,27 @@
     }
   }
 
+  async function saveGraph() {
+    if (!currentSlug) {
+      setStatus('No graph loaded')
+      return
+    }
+
+    setSaveState('Saving...', { disabled: true })
+    try {
+      await postJson(`/save_graph/${encodeURIComponent(currentSlug)}`, {
+        qParams: currentQParams(),
+        timestamp: new Date().toISOString(),
+      })
+      setSaveState('Saved!', { className: 'save-ok' })
+      window.setTimeout(() => setSaveState('Save'), 2000)
+    } catch (err) {
+      setSaveState('Error!', { className: 'save-error' })
+      renderError(err)
+      window.setTimeout(() => setSaveState('Save'), 2000)
+    }
+  }
+
   function renderPreview(data) {
     if (!data) {
       els.targetToken.textContent = ''
@@ -162,11 +189,50 @@
   }
 
   function renderGraph(slug) {
+    currentSlug = slug
+    els.saveButton.disabled = false
+    setSaveState('Save')
     window.__datacache = {}
     util.params.set('slug', slug)
     els.graph.innerHTML = ''
-    initCg(d3.select(els.graph), slug, { isGridsnap: true })
+    const graphPromise = initCg(d3.select(els.graph), slug, {
+      clickedIdCb: id => util.params.set('clickedId', id),
+      isGridsnap: true,
+    })
+    graphPromise.catch(err => {
+      currentSlug = null
+      setSaveState('Save', { disabled: true })
+      renderError(err)
+    })
     document.title = `Attribution Graph: ${slug}`
+  }
+
+  function currentQParams() {
+    const state = window.__lastCgVisState || {}
+    const qParams = {}
+
+    if (Array.isArray(state.pinnedIds)) qParams.pinnedIds = state.pinnedIds
+    if (Array.isArray(state.hiddenIds) && state.hiddenIds.length) {
+      qParams.hiddenIds = state.hiddenIds
+    }
+
+    const supernodes = state.subgraph?.supernodes || state.supernodes
+    if (Array.isArray(supernodes)) qParams.supernodes = supernodes
+
+    ;['linkType', 'clickedId', 'sg_pos', 'pruningThreshold'].forEach(key => {
+      const value = state[key] ?? util.params.get(key)
+      if (value !== undefined && value !== null && value !== 'null') qParams[key] = value
+    })
+
+    if (state.og_sg_pos && !qParams.sg_pos) qParams.sg_pos = state.og_sg_pos
+    if (state.clerps instanceof Map) {
+      qParams.clerps = JSON.stringify([...state.clerps])
+    } else {
+      const clerps = util.params.get('clerps')
+      if (clerps) qParams.clerps = clerps
+    }
+
+    return qParams
   }
 
   async function postJson(url, body) {
@@ -199,10 +265,18 @@
   function setBusy(isBusy) {
     els.previewButton.disabled = isBusy
     els.uploadButton.disabled = isBusy || !selectedUploadFile()
+    els.saveButton.disabled = isBusy || !currentSlug
   }
 
   function setStatus(text) {
     els.status.textContent = text
+  }
+
+  function setSaveState(text, { disabled = !currentSlug, className = '' } = {}) {
+    els.saveButton.textContent = text
+    els.saveButton.disabled = disabled
+    els.saveButton.classList.toggle('save-ok', className === 'save-ok')
+    els.saveButton.classList.toggle('save-error', className === 'save-error')
   }
 
   function renderError(err) {

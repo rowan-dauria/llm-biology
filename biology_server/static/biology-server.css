@@ -88,6 +88,23 @@ button:disabled {
   opacity: 0.45;
 }
 
+#save-button {
+  flex: 0 0 auto;
+  border-color: #bcc5cf;
+  background: #fff;
+  color: #1f2328;
+}
+
+#save-button.save-ok {
+  border-color: #8bc34a;
+  background: #e6f7e6;
+}
+
+#save-button.save-error {
+  border-color: #f44336;
+  background: #ffebee;
+}
+
 .status-panel {
   min-width: 0;
   border-left: 1px solid #e4e7eb;
@@ -95,9 +112,17 @@ button:disabled {
   font-size: 13px;
 }
 
+.status-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
 .status-line {
   font-weight: 600;
-  margin-bottom: 8px;
+  min-width: 0;
 }
 
 .target-token {
