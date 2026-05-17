@@ -213,6 +213,7 @@ data/feature_topk/
 data/feature_labels/
 data/ui_graphs/
 data/dog_prompts.jsonl
+data/neuronpedia-schemas
 
 # SLURM job outputs (stdout/stderr + machine.file.*)
 slurm_logs/
