@@ -97,6 +97,9 @@ class FakeRunner:
             "links": [],
         }
         graph_path.write_text(json.dumps(graph), encoding="utf-8")
+        feature_dir = out_dir / "features" / "qwen3-4b-transcoders"
+        feature_dir.mkdir(parents=True, exist_ok=True)
+        (feature_dir / "1.json").write_text(json.dumps({"featureIndex": 1}), encoding="utf-8")
         (out_dir / "graph-metadata.json").write_text(
             json.dumps({"graphs": [graph["metadata"]]}),
             encoding="utf-8",
@@ -163,6 +166,24 @@ class BiologyServerTests(unittest.TestCase):
         with run_test_server(FakeRunner()) as client:
             metadata = client.get("/data/graph-metadata.json")
             self.assertEqual(metadata, {"graphs": []})
+
+    def test_circuit_tracer_prefixed_routes_use_graph_dir(self) -> None:
+        with run_test_server(FakeRunner()) as client:
+            preview = client.post("/api/preview", {"prompt": "hello", "slug": "demo"})
+            job = client.post(
+                "/api/graphs", {"preview_id": preview["preview_id"]}, expected_status=202
+            )
+            client.wait_for_job(job["job_id"])
+
+            metadata = client.get("/ct/data/graph-metadata.json")
+            graph = client.get("/ct/graph_data/demo.json")
+            feature = client.get("/ct/features/qwen3-4b-transcoders/1.json")
+            feature_via_data = client.get("/ct/data/features/qwen3-4b-transcoders/1.json")
+
+            self.assertEqual(metadata["graphs"][0]["slug"], "demo")
+            self.assertEqual(graph["metadata"]["slug"], "demo")
+            self.assertEqual(feature, {"featureIndex": 1})
+            self.assertEqual(feature_via_data, {"featureIndex": 1})
 
     def test_resolve_frontend_dir_requires_sibling_checkout(self) -> None:
         original_project_root = server_module.PROJECT_ROOT

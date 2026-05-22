@@ -74,6 +74,35 @@ def _feature_node_to_json(node: FeatureNode) -> dict[str, Any]:
     return data
 
 
+def _with_cumulative_influence(nodes: list[FeatureNode]) -> list[FeatureNode]:
+    scored_nodes = [
+        (idx, float(node.influence))
+        for idx, node in enumerate(nodes)
+        if node.influence is not None and node.influence > 0
+    ]
+    total = sum(score for _, score in scored_nodes)
+    if total <= 0:
+        return nodes
+
+    cumulative_by_idx: dict[int, float] = {}
+    cumulative = 0.0
+    for idx, score in sorted(scored_nodes, key=lambda item: item[1], reverse=True):
+        cumulative += score / total
+        cumulative_by_idx[idx] = min(cumulative, 1.0)
+
+    return [
+        FeatureNode(
+            layer=node.layer,
+            pos=node.pos,
+            feature=node.feature,
+            activation=node.activation,
+            clerp=node.clerp,
+            influence=cumulative_by_idx.get(idx, node.influence),
+        )
+        for idx, node in enumerate(nodes)
+    ]
+
+
 def _embedding_node_to_json(pos: int, vocab_idx: int) -> dict[str, Any]:
     return {
         "node_id": embedding_node_id(vocab_idx, pos),
@@ -251,6 +280,7 @@ def export_circuit_graph(
     existing_qparams = _read_existing_qparams(graph_path)
 
     logit_id = logit_node_id(num_layers, target_token_id, len(prompt_tokens) - 1)
+    feature_nodes = _with_cumulative_influence(feature_nodes)
     nodes = [_feature_node_to_json(node) for node in feature_nodes]
     nodes.extend(
         _embedding_node_to_json(pos, vocab_idx) for pos, vocab_idx in enumerate(input_token_ids)
@@ -279,7 +309,9 @@ def export_circuit_graph(
         "transcoder_list": [],
         "prompt_tokens": prompt_tokens,
         "prompt": prompt,
-        "node_threshold": None,
+        "node_threshold": (
+            1.0 if any(node.influence is not None for node in feature_nodes) else None
+        ),
         "schema_version": 1,
     }
     graph = {

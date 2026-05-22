@@ -303,10 +303,28 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
             else:
                 self._serve_file(self.server.app.graph_file_dir, rel, send_body=send_body)
             return
+        if self.command in {"GET", "HEAD"} and path.startswith(("/ct/data/", "/ct/graph_data/")):
+            rel = (
+                path.removeprefix("/ct/data/")
+                if path.startswith("/ct/data/")
+                else path.removeprefix("/ct/graph_data/")
+            )
+            if rel == "graph-metadata.json":
+                self._serve_metadata(send_body=send_body)
+            else:
+                self._serve_file(self.server.app.graph_file_dir, rel, send_body=send_body)
+            return
         if self.command in {"GET", "HEAD"} and path.startswith("/features/"):
             self._serve_file(
                 self.server.app.graph_file_dir / "features",
                 path.removeprefix("/features/"),
+                send_body=send_body,
+            )
+            return
+        if self.command in {"GET", "HEAD"} and path.startswith("/ct/features/"):
+            self._serve_file(
+                self.server.app.graph_file_dir / "features",
+                path.removeprefix("/ct/features/"),
                 send_body=send_body,
             )
             return
