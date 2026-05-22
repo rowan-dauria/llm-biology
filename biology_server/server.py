@@ -36,7 +36,7 @@ from biology_server.attribution import (
     parse_layers,
     slugify,
 )
-from circuit_graph_export import LOCAL_SCAN, merge_qparams, write_graph_metadata
+from circuit_graph_export import write_graph_metadata
 
 logger = logging.getLogger(__name__)
 logger.propagate = False
@@ -352,11 +352,7 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
             raise RequestError(404, f"graph not found: {slug}")
         with graph_path.open(encoding="utf-8") as handle:
             graph = json.load(handle)
-        graph["qParams"] = merge_qparams(
-            qparams,
-            graph_node_ids(graph),
-            default_clicked_id(graph),
-        )
+        graph["qParams"] = qparams
         with graph_path.open("w", encoding="utf-8") as handle:
             json.dump(graph, handle, indent=2, ensure_ascii=False)
             handle.write("\n")
@@ -516,51 +512,9 @@ def normalize_uploaded_graph(
 
     normalized_metadata = dict(metadata)
     normalized_metadata["slug"] = slug
-    if normalized_metadata.get("node_threshold") is None:
-        normalized_metadata.pop("node_threshold", None)
-    if not isinstance(normalized_metadata.get("scan"), str):
-        normalized_metadata["scan"] = LOCAL_SCAN
     graph["metadata"] = normalized_metadata
-    graph["qParams"] = merge_qparams(
-        qparams,
-        graph_node_ids(graph),
-        default_clicked_id(graph),
-    )
+    graph["qParams"] = qparams
     return graph, normalized_metadata
-
-
-def graph_node_ids(graph: dict[str, Any]) -> set[str]:
-    return {
-        node["node_id"]
-        for node in graph.get("nodes", [])
-        if isinstance(node, dict) and isinstance(node.get("node_id"), str)
-    }
-
-
-def default_clicked_id(graph: dict[str, Any]) -> str:
-    nodes = graph.get("nodes", [])
-    if not isinstance(nodes, list):
-        return ""
-
-    for node in nodes:
-        if (
-            isinstance(node, dict)
-            and node.get("feature_type") == "logit"
-            and node.get("is_target_logit") is True
-            and isinstance(node.get("node_id"), str)
-        ):
-            return node["node_id"]
-    for node in nodes:
-        if (
-            isinstance(node, dict)
-            and node.get("feature_type") == "logit"
-            and isinstance(node.get("node_id"), str)
-        ):
-            return node["node_id"]
-    for node in nodes:
-        if isinstance(node, dict) and isinstance(node.get("node_id"), str):
-            return node["node_id"]
-    return ""
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -650,11 +604,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--static-dir", type=Path, default=DEFAULT_STATIC_DIR)
     parser.add_argument("--layers", default=",".join(str(layer) for layer in DEFAULT_LAYERS))
     parser.add_argument("--model-id", default=MODEL_ID)
-    parser.add_argument("--scan", default=LOCAL_SCAN)
-    parser.add_argument("--feature-dir-name", default=None)
-    parser.add_argument("--feature-json-base-url", default=None)
-    parser.add_argument("--neuronpedia-source-set", default=None)
-    parser.add_argument("--neuronpedia-lorsa-source-set", default=None)
     return parser
 
 
@@ -665,11 +614,6 @@ def main(argv: list[str] | None = None) -> None:
         layers=parse_layers(args.layers),
         model_id=args.model_id,
         graph_file_dir=args.graph_file_dir,
-        scan=args.scan,
-        feature_dir_name=args.feature_dir_name,
-        feature_json_base_url=args.feature_json_base_url,
-        neuronpedia_source_set=args.neuronpedia_source_set,
-        neuronpedia_lorsa_source_set=args.neuronpedia_lorsa_source_set,
     )
     server = serve(
         graph_file_dir=args.graph_file_dir,

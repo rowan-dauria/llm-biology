@@ -20,7 +20,6 @@ from biology_server.attribution import (  # noqa: E402
     BiologyAttributionRunner,
     parse_layers,
 )
-from circuit_graph_export import LOCAL_SCAN  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,11 +36,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-feature-nodes", type=int, default=DEFAULT_MAX_FEATURE_NODES)
     parser.add_argument("--edge-top-k", type=int, default=DEFAULT_EDGE_TOP_K)
     parser.add_argument("--graph-file-dir", type=Path, default=DEFAULT_GRAPH_DIR)
-    parser.add_argument("--scan", default=LOCAL_SCAN)
-    parser.add_argument("--feature-dir-name", default=None)
-    parser.add_argument("--feature-json-base-url", default=None)
-    parser.add_argument("--neuronpedia-source-set", default=None)
-    parser.add_argument("--neuronpedia-lorsa-source-set", default=None)
     parser.add_argument(
         "--save-pt",
         nargs="?",
@@ -59,11 +53,6 @@ def main() -> None:
         layers=parse_layers(args.layers),
         model_id=args.model_id,
         graph_file_dir=args.graph_file_dir,
-        scan=args.scan,
-        feature_dir_name=args.feature_dir_name,
-        feature_json_base_url=args.feature_json_base_url,
-        neuronpedia_source_set=args.neuronpedia_source_set,
-        neuronpedia_lorsa_source_set=args.neuronpedia_lorsa_source_set,
     )
     runner.generate_graph(
         args.prompt,

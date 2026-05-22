@@ -29,7 +29,6 @@ from huggingface_hub import snapshot_download
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 
 from circuit_graph_export import (
-    LOCAL_SCAN,
     FeatureNode,
     GraphLink,
     embedding_node_id,
@@ -547,21 +546,11 @@ class BiologyAttributionRunner:
         model_id: str = MODEL_ID,
         graph_file_dir: Path | str = DEFAULT_GRAPH_DIR,
         preview_top_k: int = 5,
-        scan: str = LOCAL_SCAN,
-        feature_dir_name: str | None = None,
-        feature_json_base_url: str | None = None,
-        neuronpedia_source_set: str | None = None,
-        neuronpedia_lorsa_source_set: str | None = None,
     ) -> None:
         self.layers = list(layers or DEFAULT_LAYERS)
         self.model_id = model_id
         self.graph_file_dir = Path(graph_file_dir)
         self.preview_top_k = preview_top_k
-        self.scan = scan
-        self.feature_dir_name = feature_dir_name or scan
-        self.feature_json_base_url = feature_json_base_url
-        self.neuronpedia_source_set = neuronpedia_source_set
-        self.neuronpedia_lorsa_source_set = neuronpedia_lorsa_source_set
         self._lock = threading.RLock()
         self._device: torch.device | None = None
         self._dtype: torch.dtype | None = None
@@ -793,11 +782,6 @@ class BiologyAttributionRunner:
                 target_token_str=target_token_str,
                 target_token_prob=target_token_prob,
                 feature_examples=feature_examples,
-                scan=self.scan,
-                feature_dir_name=self.feature_dir_name,
-                feature_json_base_url=self.feature_json_base_url,
-                neuronpedia_source_set=self.neuronpedia_source_set,
-                neuronpedia_lorsa_source_set=self.neuronpedia_lorsa_source_set,
             )
 
             print(f"[SAVE] graph JSON: {graph_path}")

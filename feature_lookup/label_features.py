@@ -349,11 +349,8 @@ def _post_ollama_chat(host: str, payload: dict[str, Any]) -> str:
     try:
         with urllib.request.urlopen(request, timeout=120) as response:
             body = response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Ollama HTTP {exc.code} for {url}: {body}") from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"Ollama request failed for {url}: {exc.reason}") from exc
+        raise RuntimeError(f"Ollama request failed for {url}") from exc
 
     obj = json.loads(body)
     error = obj.get("error")
