@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+import biology_server.server as server_module
 from biology_server.attribution import GraphResult, PreviewResult, TokenCandidate
 from biology_server.server import serve
 
@@ -168,6 +169,21 @@ class BiologyServerTests(unittest.TestCase):
         with run_test_server(FakeRunner()) as client:
             metadata = client.get("/data/graph-metadata.json")
             self.assertEqual(metadata, {"graphs": []})
+
+    def test_resolve_frontend_dir_requires_sibling_checkout(self) -> None:
+        original_project_root = server_module.PROJECT_ROOT
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root = Path(tmp) / "mphil-project"
+            project_root.mkdir()
+            server_module.PROJECT_ROOT = project_root
+            try:
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "Could not find circuit-tracer frontend assets",
+                ):
+                    server_module.resolve_frontend_dir()
+            finally:
+                server_module.PROJECT_ROOT = original_project_root
 
     def test_save_graph_updates_qparams(self) -> None:
         with run_test_server(FakeRunner()) as client:

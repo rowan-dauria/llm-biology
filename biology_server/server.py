@@ -456,14 +456,10 @@ def resolve_frontend_dir() -> Path:
     adjacent = PROJECT_ROOT.parent / "circuit-tracer" / "circuit_tracer" / "frontend" / "assets"
     if adjacent.exists():
         return adjacent.resolve()
-    try:
-        from circuit_tracer.frontend.local_server import DEFAULT_FRONTEND_DIR
-
-        return Path(DEFAULT_FRONTEND_DIR).resolve()
-    except Exception as exc:
-        raise RuntimeError(
-            "Could not resolve circuit-tracer frontend assets. Pass --frontend-dir explicitly."
-        ) from exc
+    raise RuntimeError(
+        "Could not find circuit-tracer frontend assets at "
+        f"{adjacent}. Pass --frontend-dir explicitly."
+    )
 
 
 def safe_join(root: Path, rel_path: str) -> Path:
