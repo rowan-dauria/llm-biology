@@ -76,7 +76,15 @@ def load_feature_labels(
                 line = line.strip()
                 if not line:
                     continue
-                label = _parse_record(json.loads(line), source=path, line_no=line_no)
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"{path}:{line_no}: invalid JSON label record: {exc.msg}"
+                    ) from exc
+                if not isinstance(record, dict):
+                    raise ValueError(f"{path}:{line_no}: label record must be a JSON object")
+                label = _parse_record(record, source=path, line_no=line_no)
                 out[(label.layer, label.feature)] = label
     return out
 
