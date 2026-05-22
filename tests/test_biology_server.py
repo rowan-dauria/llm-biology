@@ -184,6 +184,7 @@ class BiologyServerTests(unittest.TestCase):
                         "clickedId": "37_2_0",
                         "pinnedIds": ["37_2_0", "missing"],
                         "linkType": "input",
+                        "influenceCutoff": 0.6,
                         "pruningThreshold": 0.5,
                     }
                 },
@@ -197,6 +198,7 @@ class BiologyServerTests(unittest.TestCase):
                     "linkType": "input",
                     "clickedId": "37_2_0",
                     "sg_pos": "",
+                    "influenceCutoff": 0.6,
                     "pruningThreshold": 0.5,
                 },
             )

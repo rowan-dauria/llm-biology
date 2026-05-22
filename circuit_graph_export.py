@@ -15,6 +15,7 @@ LOCAL_EXTRA_QPARAMS = {
     "densityThreshold",
     "gridsnap",
     "hiddenIds",
+    "influenceCutoff",
     "pruningThreshold",
 }
 

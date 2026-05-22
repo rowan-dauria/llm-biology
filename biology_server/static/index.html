@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <meta charset="utf-8">
-<meta name="viewport" content="width=1100, initial-scale=1">
-<title>Biology Attribution Server</title>
+<meta name="viewport" content="width=1200, initial-scale=1">
+<title>Biology Graph Workbench</title>
 <link rel="stylesheet" href="/ct/style.css">
 <link rel="stylesheet" href="/ct/attribution_graph/cg.css">
 <link rel="stylesheet" href="/ct/attribution_graph/gridsnap/gridsnap.css">
@@ -9,9 +9,29 @@
 <link rel="stylesheet" href="/biology-server.css">
 
 <div class="tooltip tooltip-hidden"></div>
-<main class="server-shell">
-  <section class="prompt-panel">
-    <div class="prompt-controls">
+<main class="workbench-shell">
+  <header class="workbench-toolbar">
+    <div class="toolbar-group graph-loader">
+      <select id="graph-select" aria-label="Graph"></select>
+      <button id="load-button" type="button">Load</button>
+      <input id="upload-file" type="file" accept=".json,application/json">
+      <button id="upload-button" type="button" disabled>Upload</button>
+      <button id="save-button" type="button" disabled>Save</button>
+    </div>
+
+    <div class="toolbar-group influence-filter">
+      <span>Show Nodes Accounting for</span>
+      <output id="influence-label" for="influence-cutoff">60%</output>
+      <span>of the Influence</span>
+      <input id="influence-cutoff" type="range" min="1" max="100" step="1" value="60">
+    </div>
+
+    <div class="toolbar-status" id="status">Ready</div>
+  </header>
+
+  <details class="prompt-drawer" id="prompt-drawer">
+    <summary>Prompt generation</summary>
+    <section class="prompt-panel">
       <textarea id="prompt" spellcheck="false">The biological function of hemoglobin is to</textarea>
       <div class="settings-row">
         <label>
@@ -26,26 +46,18 @@
           Edges
           <input id="edge-top-k" type="number" min="0" step="1" value="20">
         </label>
-        <label>
-          Graph JSON
-          <input id="upload-file" type="file" accept=".json,application/json">
-        </label>
         <button id="preview-button" type="button">Preview</button>
         <button id="generate-button" type="button" disabled>Generate</button>
-        <button id="upload-button" type="button" disabled>Upload</button>
       </div>
-    </div>
-    <div class="status-panel">
-      <div class="status-header">
-        <div class="status-line" id="status">Ready</div>
-        <button id="save-button" type="button" disabled>Save</button>
+      <div class="preview-panel">
+        <div class="target-token" id="target-token"></div>
+        <div class="top-tokens" id="top-tokens"></div>
+        <pre id="job-log"></pre>
       </div>
-      <div class="target-token" id="target-token"></div>
-      <div class="top-tokens" id="top-tokens"></div>
-      <pre id="job-log"></pre>
-    </div>
-  </section>
-  <section id="graph" class="cg"></section>
+    </section>
+  </details>
+
+  <section id="graph" class="cg workbench-graph"></section>
 </main>
 
 <script>

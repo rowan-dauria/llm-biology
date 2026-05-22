@@ -153,6 +153,7 @@ class CircuitGraphExportTests(unittest.TestCase):
             "clickedId": "stale_node",
             "sg_pos": "12,34",
             "clerps": '[["2_100_0", "label"]]',
+            "influenceCutoff": 0.6,
             "pruningThreshold": None,
         }
         node_ids = {"2_100_0", "37_999_5"}
@@ -164,6 +165,7 @@ class CircuitGraphExportTests(unittest.TestCase):
         self.assertEqual(merged["clickedId"], "37_999_5")
         self.assertEqual(merged["sg_pos"], "12,34")
         self.assertEqual(merged["clerps"], '[["2_100_0", "label"]]')
+        self.assertEqual(merged["influenceCutoff"], 0.6)
         self.assertNotIn("pruningThreshold", merged)
 
     def test_merge_qparams_preserves_valid_clicked_id(self) -> None:
