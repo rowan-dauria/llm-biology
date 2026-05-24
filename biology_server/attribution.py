@@ -50,6 +50,7 @@ CACHE_DIR = os.getenv("HF_HOME")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_GRAPH_DIR = PROJECT_ROOT / "data" / "ui_graphs"
 DEFAULT_PT_DIR = PROJECT_ROOT / "data" / "attribution_graphs"
+DEFAULT_TOPK_DIR = PROJECT_ROOT / "data" / "feature_topk" / "150k-pile"
 DEFAULT_WINDOW = 10
 
 
@@ -464,9 +465,15 @@ def build_feature_examples(
     selected: list[SelectedFeature],
     labels: FeatureLabelMap,
     tokenizer: PreTrainedTokenizerBase,
+    topk_dir: Path,
     feature_logits: dict[tuple[int, int], tuple[list[str], list[str]]] | None = None,
 ) -> dict[int, dict[str, Any]]:
-    """Build local feature-example files from saved top-K windows when available."""
+    """Build local feature-example files from saved top-K windows.
+
+    ``topk_dir`` is required and must contain ``topk_layer_<L>.pt`` for every
+    selected layer; a missing file raises rather than silently producing empty
+    feature panels.
+    """
 
     examples: dict[int, dict[str, Any]] = {}
     features_by_layer: dict[int, set[int]] = {}
@@ -474,10 +481,9 @@ def build_feature_examples(
         features_by_layer.setdefault(feature.layer, set()).add(feature.feature)
 
     for layer, feature_ids in sorted(features_by_layer.items()):
-        topk_path = PROJECT_ROOT / "data" / "feature_topk" / f"topk_layer_{layer}.pt"
+        topk_path = topk_dir / f"topk_layer_{layer}.pt"
         if not topk_path.exists():
-            print(f"[WARN] missing top-K file for layer {layer}: {topk_path}")
-            continue
+            raise FileNotFoundError(f"missing top-K file for layer {layer}: {topk_path}")
         try:
             layer_data = torch.load(topk_path, weights_only=False, map_location="cpu")
             needed_prompt_ids: set[int] = set()
@@ -543,11 +549,13 @@ class BiologyAttributionRunner:
         layers: list[int] | None = None,
         model_id: str = MODEL_ID,
         graph_file_dir: Path | str = DEFAULT_GRAPH_DIR,
+        topk_dir: Path | str = DEFAULT_TOPK_DIR,
         preview_top_k: int = 5,
     ) -> None:
         self.layers = list(layers or DEFAULT_LAYERS)
         self.model_id = model_id
         self.graph_file_dir = Path(graph_file_dir)
+        self.topk_dir = Path(topk_dir)
         self.preview_top_k = preview_top_k
         self._lock = threading.RLock()
         self._device: torch.device | None = None
@@ -775,6 +783,7 @@ class BiologyAttributionRunner:
                 selected=selected,
                 labels=labels,
                 tokenizer=tokenizer,
+                topk_dir=self.topk_dir,
                 feature_logits=feature_logits,
             )
             output_dir = Path(graph_file_dir) if graph_file_dir is not None else self.graph_file_dir
