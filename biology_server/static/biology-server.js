@@ -16,6 +16,15 @@
 
   let preview = null
   let activeJobId = null
+  const graphStateParamKeys = [
+    'pinnedIds',
+    'supernodes',
+    'linkType',
+    'clickedId',
+    'sg_pos',
+    'pruningThreshold',
+    'clerps',
+  ]
 
   els.previewButton.addEventListener('click', previewPrompt)
   els.generateButton.addEventListener('click', generateGraph)
@@ -79,7 +88,7 @@
       if (job.status === 'succeeded') {
         setBusy(false)
         els.generateButton.disabled = false
-        renderGraph(job.slug)
+        renderGraph(job.slug, { resetGraphState: true })
         return
       }
       if (job.status === 'failed') {
@@ -125,7 +134,7 @@
       })
       renderPreview(null)
       setStatus(`Uploaded: ${uploaded.slug}`)
-      renderGraph(uploaded.slug)
+      renderGraph(uploaded.slug, { resetGraphState: true })
     } catch (err) {
       renderError(err)
     } finally {
@@ -165,9 +174,14 @@
     }
   }
 
-  function renderGraph(slug) {
+  function renderGraph(slug, { resetGraphState = false } = {}) {
+    if (resetGraphState) clearGraphStateParams()
     util.params.set('slug', slug)
     graphView.show(slug)
+  }
+
+  function clearGraphStateParams() {
+    graphStateParamKeys.forEach(key => util.params.set(key, null))
   }
 
   // Ported from circuit-tracer's frontend index.html; keep in sync with it.
@@ -176,13 +190,19 @@
 
     let graphs = []
     let visState = null
+    let activeGraphData = null
     let sliderContainer = null
     let navBuilt = false
     const debouncedRender = util.debounce(render, 300)
 
     async function show(slug) {
       const meta = await util.getFile('./data/graph-metadata.json', false)
+      const graphData = await util.getFile(`./graph_data/${slug}.json`, false)
+      activeGraphData = graphData
       graphs = meta.graphs || []
+
+      const currentGraph = graphs.find(g => g.slug === slug)
+      seedGraphStateParams(graphData, currentGraph)
 
       visState = {
         slug,
@@ -190,10 +210,15 @@
         isGridsnap: util.params.get('isGridsnap')?.replace('null', ''),
       }
 
-      const currentGraph = graphs.find(g => g.slug === slug)
       if (currentGraph && typeof currentGraph.node_threshold === 'number') {
+        const urlPruningThreshold = normalizePruningThreshold(
+          util.params.get('pruningThreshold'),
+          currentGraph.node_threshold
+        )
         visState.pruningThreshold =
-          util.params.get('pruningThreshold') || currentGraph.node_threshold || 0.4
+          urlPruningThreshold ||
+          currentGraph.node_threshold ||
+          0.4
       }
 
       buildNav()
@@ -238,7 +263,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           qParams: Object.fromEntries(
-            ['pinnedIds', 'supernodes', 'linkType', 'clickedId', 'sg_pos', 'pruningThreshold', 'clerps']
+            graphStateParamKeys
               .map(k => [k, util.params.get(k)])
               .filter(([_k, v]) => v !== undefined && v !== null && v !== 'null')
           ),
@@ -328,6 +353,7 @@
         util.params.set('pruningThreshold', null)
       }
 
+      syncActiveGraphPruning()
       cgSel.html('')
 
       const options = {
@@ -341,6 +367,15 @@
 
       initCg(cgSel, visState.slug, options)
       document.title = 'Attribution Graph: ' + m.prompt
+    }
+
+    function syncActiveGraphPruning() {
+      if (!activeGraphData || typeof activeGraphData.qParams !== 'object') return
+      if (visState.pruningThreshold === undefined) {
+        delete activeGraphData.qParams.pruningThreshold
+      } else {
+        activeGraphData.qParams.pruningThreshold = String(visState.pruningThreshold)
+      }
     }
 
     return { show }
@@ -371,6 +406,49 @@
 
   function selectedUploadFile() {
     return els.uploadFile.files && els.uploadFile.files[0]
+  }
+
+  function normalizePruningThreshold(value, max) {
+    if (value === undefined || value === null || value === '') return null
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) return null
+    const numericMax = Number(max)
+    const upper = Number.isFinite(numericMax) ? numericMax : parsed
+    return String(Math.min(Math.max(parsed, 0), upper))
+  }
+
+  function seedGraphStateParams(graphData, currentGraph) {
+    const qParams = graphData && graphData.qParams
+    if (!qParams || typeof qParams !== 'object') return
+
+    graphStateParamKeys.forEach(key => {
+      if (util.params.get(key)) return
+      const value = graphStateParamToUrl(key, qParams[key], currentGraph)
+      if (value !== null) util.params.set(key, value)
+    })
+  }
+
+  function graphStateParamToUrl(key, value, currentGraph) {
+    if (value === undefined || value === null) return null
+
+    if (key === 'pruningThreshold') {
+      return normalizePruningThreshold(value, currentGraph?.node_threshold)
+    }
+
+    if (key === 'pinnedIds') {
+      if (Array.isArray(value)) {
+        const ids = value.filter(item => typeof item === 'string' && item)
+        return ids.length ? ids.join(',') : null
+      }
+      return typeof value === 'string' && value ? value : null
+    }
+
+    if (key === 'supernodes' || key === 'clerps') {
+      if (Array.isArray(value)) return value.length ? JSON.stringify(value) : null
+      return typeof value === 'string' && value ? value : null
+    }
+
+    return typeof value === 'string' && value ? value : null
   }
 
   function setBusy(isBusy) {
