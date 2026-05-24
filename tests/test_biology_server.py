@@ -167,7 +167,7 @@ class BiologyServerTests(unittest.TestCase):
             metadata = client.get("/data/graph-metadata.json")
             self.assertEqual(metadata, {"graphs": []})
 
-    def test_circuit_tracer_prefixed_routes_use_graph_dir(self) -> None:
+    def test_in_page_asset_routes_use_graph_dir(self) -> None:
         with run_test_server(FakeRunner()) as client:
             preview = client.post("/api/preview", {"prompt": "hello", "slug": "demo"})
             job = client.post(
@@ -175,15 +175,34 @@ class BiologyServerTests(unittest.TestCase):
             )
             client.wait_for_job(job["job_id"])
 
-            metadata = client.get("/ct/data/graph-metadata.json")
-            graph = client.get("/ct/graph_data/demo.json")
-            feature = client.get("/ct/features/qwen3-4b-transcoders/1.json")
-            feature_via_data = client.get("/ct/data/features/qwen3-4b-transcoders/1.json")
+            metadata = client.get("/data/graph-metadata.json")
+            graph = client.get("/graph_data/demo.json")
+            feature_via_data = client.get("/data/features/qwen3-4b-transcoders/1.json")
+            feature = client.get("/features/qwen3-4b-transcoders/1.json")
 
             self.assertEqual(metadata["graphs"][0]["slug"], "demo")
             self.assertEqual(graph["metadata"]["slug"], "demo")
-            self.assertEqual(feature, {"featureIndex": 1})
             self.assertEqual(feature_via_data, {"featureIndex": 1})
+            self.assertEqual(feature, {"featureIndex": 1})
+
+    def test_page_and_ct_assets_served(self) -> None:
+        with run_test_server(FakeRunner(), ct_assets={"util.js": "window.util = {}"}) as client:
+            status, body = client.get_raw("/")
+            self.assertEqual(status, 200)
+            self.assertEqual(body, "ok")
+
+            status, asset = client.get_raw("/ct/util.js")
+            self.assertEqual(status, 200)
+            self.assertEqual(asset, "window.util = {}")
+
+            # App shell is uncached; vendored /ct/ assets stay cacheable.
+            self.assertEqual(client.get_header("/", "Cache-Control"), "no-store")
+            self.assertIsNone(client.get_header("/ct/util.js", "Cache-Control"))
+
+    def test_removed_iframe_shims_return_404(self) -> None:
+        with run_test_server(FakeRunner()) as client:
+            self.assertEqual(client.get_raw("/ct/data/graph-metadata.json")[0], 404)
+            self.assertEqual(client.get_raw("/ct/graph_data/demo.json")[0], 404)
 
     def test_resolve_frontend_dir_requires_sibling_checkout(self) -> None:
         original_project_root = server_module.PROJECT_ROOT
@@ -211,6 +230,22 @@ class BiologyServerTests(unittest.TestCase):
             client.post("/save_graph/demo", {"qParams": {"clickedId": "changed"}})
             graph = client.get("/graph_data/demo.json")
             self.assertEqual(graph["qParams"], {"clickedId": "changed"})
+
+    def test_graph_data_is_not_cached(self) -> None:
+        with run_test_server(FakeRunner()) as client:
+            preview = client.post("/api/preview", {"prompt": "hello", "slug": "demo"})
+            job = client.post(
+                "/api/graphs", {"preview_id": preview["preview_id"]}, expected_status=202
+            )
+            client.wait_for_job(job["job_id"])
+
+            self.assertEqual(
+                client.get_header("/graph_data/demo.json", "Cache-Control"), "no-store"
+            )
+            # Immutable feature files stay cacheable.
+            self.assertIsNone(
+                client.get_header("/data/features/qwen3-4b-transcoders/1.json", "Cache-Control")
+            )
 
     def test_upload_graph_writes_graph_and_metadata(self) -> None:
         with run_test_server(FakeRunner()) as client:
@@ -295,6 +330,22 @@ class HttpTestClient:
         conn.request("GET", path)
         return self._read_json(conn, expected_status)
 
+    def get_raw(self, path: str) -> tuple[int, str]:
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("GET", path)
+        response = conn.getresponse()
+        body = response.read()
+        conn.close()
+        return response.status, body.decode("utf-8")
+
+    def get_header(self, path: str, name: str) -> str | None:
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("GET", path)
+        response = conn.getresponse()
+        response.read()
+        conn.close()
+        return response.getheader(name)
+
     def post(
         self,
         path: str,
@@ -330,8 +381,9 @@ class HttpTestClient:
 
 
 class run_test_server:
-    def __init__(self, runner: FakeRunner) -> None:
+    def __init__(self, runner: FakeRunner, *, ct_assets: dict[str, str] | None = None) -> None:
         self.runner = runner
+        self.ct_assets = ct_assets or {}
         self.tempdir: tempfile.TemporaryDirectory[str] | None = None
         self.server = None
 
@@ -344,6 +396,10 @@ class run_test_server:
         frontend_dir.mkdir()
         static_dir.mkdir()
         (static_dir / "index.html").write_text("ok", encoding="utf-8")
+        for rel_path, content in self.ct_assets.items():
+            asset_path = frontend_dir / rel_path
+            asset_path.parent.mkdir(parents=True, exist_ok=True)
+            asset_path.write_text(content, encoding="utf-8")
         self.server = serve(
             graph_file_dir=graph_dir,
             frontend_dir=frontend_dir,
