@@ -23,7 +23,6 @@ try:
         Window,
         active_prompt_ids,
         collect_prompt_texts,
-        format_windows_for_prompt,
         get_windows,
         load_tokenizer,
         select_features,
@@ -34,7 +33,6 @@ except ImportError:
         Window,
         active_prompt_ids,
         collect_prompt_texts,
-        format_windows_for_prompt,
         get_windows,
         load_tokenizer,
         select_features,
@@ -53,9 +51,28 @@ DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
 DEFAULT_TRANSFORMERS_MODEL = "google/gemma-4-E4B-it"
 DEFAULT_MAX_NEW_TOKENS = 256
 
-SYSTEM_PROMPT = """You are analysing a single internal feature of a transformer (Qwen3-4B). You will be shown the top-K text contexts where this feature fires most strongly, with the trigger token wrapped as <<token>>. Only the token inside << >> is the activating token position; the surrounding text is included only to interpret that token in context. Identify the concept the feature appears to detect.
+SYSTEM_PROMPT = """You are explaining the behavior of a neuron in a neural network. Your response should be a very concise explanation (1-6 words) that captures what the neuron detects or predicts by finding patterns in lists.
 
-Output strict JSON: {"label": "...", "rationale": "..."}. The label must be 1-5 words. The rationale must be one sentence. If the activations look incoherent or noisy, label "unclear" and explain why."""
+To determine the explanation, you are given two lists:
+
+- MAX_ACTIVATING_TOKENS, which are the top activating tokens in the top activating texts.
+- TOP_ACTIVATING_TEXTS, which are top activating texts.
+
+You should look for a pattern by trying the following methods in order. Once you find a pattern, stop and return that pattern. Do not proceed to the later methods.
+Method 1: Look at MAX_ACTIVATING_TOKENS. If they share something specific in common, or are all the same token or a variation of the same token (like different cases or conjugations), respond with that token.
+Method 2: Look at TOP_ACTIVATING_TEXTS and make a best guess by describing the broad theme or context, ignoring the max activating tokens.
+
+Rules:
+- Keep your explanation extremely concise (1-6 words, mostly 1-3 words).
+- Do not add unnecessary phrases like "words related to", "concepts related to", or "variations of the word".
+- Do not mention "tokens" or "patterns" in your explanation.
+- The explanation should be specific. For example, "unique words" is not a specific enough pattern, nor is "foreign words".
+- If you absolutely cannot make any guesses, return the first token in MAX_ACTIVATING_TOKENS.
+
+Respond with strict JSON only: {"label": "...", "rationale": "..."}.
+The label is the concise explanation. The rationale is one sentence that names the method number used and the reason for the label."""
+
+_TRIGGER_RE = re.compile(r"<<(.*?)>>", re.DOTALL)
 
 
 @dataclass(slots=True)
@@ -90,15 +107,25 @@ def _read_existing_features(path: Path) -> set[int]:
 
 
 def _build_user_prompt(layer: int, summary: FeatureSummary, windows: list[Window]) -> str:
+    active_windows = [window for window in windows if window.active]
+    max_tokens = []
+    top_texts = []
+    for window in active_windows:
+        match = _TRIGGER_RE.search(window.rendered)
+        token = match.group(1) if match else ""
+        max_tokens.append(f"#{len(max_tokens) + 1}: {token}")
+        top_texts.append(f"#{len(top_texts) + 1}: {window.rendered}")
+
     lines = [
         f"Layer {layer} feature {summary.feature}",
         f"Top windows: max_activation={summary.max_activation:.3f} distinct_prompts={summary.n_distinct_prompts}",
+        "",
+        "MAX_ACTIVATING_TOKENS:",
+        "\n".join(max_tokens) if max_tokens else "(none)",
+        "",
+        "TOP_ACTIVATING_TEXTS:",
     ]
-    formatted = format_windows_for_prompt(windows)
-    if formatted:
-        lines.append(formatted)
-    else:
-        lines.append("(no activating windows)")
+    lines.append("\n".join(top_texts) if top_texts else "(no activating windows)")
     return "\n".join(lines)
 
 
@@ -116,8 +143,8 @@ def _validate_response(text: str) -> dict[str, str]:
     rationale = rationale.strip()
     if not label:
         raise ValueError("Label is empty")
-    if len(label.split()) > 5:
-        raise ValueError("Label exceeds 5 words")
+    if len(label.split()) > 6:
+        raise ValueError("Label exceeds 6 words")
     if not rationale:
         raise ValueError("Rationale is empty")
     if "\n" in rationale:
