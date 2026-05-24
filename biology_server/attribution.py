@@ -18,13 +18,9 @@ from typing import Any
 
 import torch
 from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTranscoder
-
-try:
-    from circuit_tracer.transcoder.single_layer_transcoder import load_relu_transcoder
-except ImportError:
-    from circuit_tracer.transcoder.single_layer_transcoder import (
-        load_transcoder as load_relu_transcoder,
-    )
+from circuit_tracer.transcoder.single_layer_transcoder import (
+    load_transcoder as load_relu_transcoder,
+)
 from huggingface_hub import snapshot_download
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 
