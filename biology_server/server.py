@@ -62,6 +62,7 @@ class GraphJob:
     target_token_id: int
     max_feature_nodes: int
     edge_top_k: int
+    use_chat_template: bool
     status: str = "queued"
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
@@ -104,7 +105,8 @@ class BiologyApp:
     def preview(self, payload: dict[str, Any]) -> dict[str, Any]:
         prompt = require_nonempty_string(payload, "prompt")
         slug = optional_string(payload, "slug")
-        result = self.runner.preview(prompt, slug=slug)
+        use_chat_template = optional_bool(payload, "use_chat_template", default=True)
+        result = self.runner.preview(prompt, slug=slug, use_chat_template=use_chat_template)
         preview_id = uuid.uuid4().hex
         with self._lock:
             self.previews[preview_id] = PreviewRecord(preview_id=preview_id, result=result)
@@ -141,6 +143,7 @@ class BiologyApp:
                 target_token_id=preview_result.target_token_id,
                 max_feature_nodes=max_feature_nodes,
                 edge_top_k=edge_top_k,
+                use_chat_template=preview_result.use_chat_template,
             )
             self.jobs[job_id] = job
             self._futures[job_id] = self._executor.submit(self._run_graph_job, job_id)
@@ -191,6 +194,7 @@ class BiologyApp:
                     max_feature_nodes=job.max_feature_nodes,
                     edge_top_k=job.edge_top_k,
                     graph_file_dir=self.graph_file_dir,
+                    use_chat_template=job.use_chat_template,
                 )
             self._finish_job(job_id, result, capture.getvalue())
         except Exception as exc:
@@ -577,11 +581,19 @@ def optional_int(payload: dict[str, Any], key: str, *, default: int, minimum: in
     return parsed
 
 
+def optional_bool(payload: dict[str, Any], key: str, *, default: bool) -> bool:
+    value = payload.get(key, default)
+    if not isinstance(value, bool):
+        raise RequestError(400, f"{key} must be a boolean")
+    return value
+
+
 def preview_to_json(preview_id: str, result: PreviewResult) -> dict[str, Any]:
     return {
         "preview_id": preview_id,
         "slug": result.slug,
         "prompt": result.prompt,
+        "use_chat_template": result.use_chat_template,
         "prompt_tokens": result.prompt_tokens,
         "input_token_ids": result.input_token_ids,
         "target_token": {

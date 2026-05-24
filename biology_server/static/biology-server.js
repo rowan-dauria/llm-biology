@@ -4,6 +4,7 @@
     slug: document.querySelector('#slug'),
     maxFeatureNodes: document.querySelector('#max-feature-nodes'),
     edgeTopK: document.querySelector('#edge-top-k'),
+    useChatTemplate: document.querySelector('#use-chat-template'),
     uploadFile: document.querySelector('#upload-file'),
     previewButton: document.querySelector('#preview-button'),
     generateButton: document.querySelector('#generate-button'),
@@ -28,6 +29,7 @@
 
   els.previewButton.addEventListener('click', previewPrompt)
   els.generateButton.addEventListener('click', generateGraph)
+  els.useChatTemplate.addEventListener('change', updateGenerateButton)
   els.uploadFile.addEventListener('change', () => {
     els.uploadButton.disabled = !selectedUploadFile()
   })
@@ -47,9 +49,10 @@
       preview = await postJson('/api/preview', {
         prompt: els.prompt.value,
         slug: cleanValue(els.slug.value),
+        use_chat_template: els.useChatTemplate.checked,
       })
       renderPreview(preview)
-      els.generateButton.disabled = false
+      updateGenerateButton()
       setStatus('Preview ready')
     } catch (err) {
       preview = null
@@ -60,7 +63,7 @@
   }
 
   async function generateGraph() {
-    if (!preview) return
+    if (!preview || preview.use_chat_template !== els.useChatTemplate.checked) return
     setBusy(true)
     els.generateButton.disabled = true
     setStatus('Queued graph generation...')
@@ -78,6 +81,11 @@
       els.generateButton.disabled = false
       renderError(err)
     }
+  }
+
+  function updateGenerateButton() {
+    els.generateButton.disabled =
+      !preview || preview.use_chat_template !== els.useChatTemplate.checked
   }
 
   async function pollJob(jobId) {

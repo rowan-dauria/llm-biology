@@ -85,6 +85,7 @@ class TokenCandidate:
 class PreviewResult:
     prompt: str
     slug: str
+    use_chat_template: bool
     prompt_tokens: list[str]
     input_token_ids: list[int]
     target_token_id: int
@@ -603,15 +604,19 @@ class BiologyAttributionRunner:
         self,
         tokenizer: PreTrainedTokenizerBase,
         prompt: str,
+        *,
+        use_chat_template: bool = True,
     ) -> tuple[Any, list[int], list[str]]:
         if self._device is None:
             raise RuntimeError("runner device is not loaded")
-        text = tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt}],
-            tokenize=False,
-            add_generation_prompt=True,
-            enable_thinking=False,
-        )
+        text = prompt
+        if use_chat_template:
+            text = tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
         inputs = tokenizer([text], return_tensors="pt").to(self._device)
 
         input_token_ids = [
@@ -642,13 +647,16 @@ class BiologyAttributionRunner:
         *,
         slug: str | None = None,
         top_k: int | None = None,
+        use_chat_template: bool = True,
     ) -> PreviewResult:
         """Run a hooked forward pass and return the default next-token target."""
 
         with self._lock:
             model, tokenizer, transcoders = self._loaded()
             resolved_slug = slug or slugify(prompt[:50])
-            inputs, input_token_ids, prompt_tokens = self._inputs_for_prompt(tokenizer, prompt)
+            inputs, input_token_ids, prompt_tokens = self._inputs_for_prompt(
+                tokenizer, prompt, use_chat_template=use_chat_template
+            )
             state = HookState(features={}, mlp_inputs={})
             handles = self._register_hooks(model, transcoders, state)
             try:
@@ -675,6 +683,7 @@ class BiologyAttributionRunner:
             return PreviewResult(
                 prompt=prompt,
                 slug=resolved_slug,
+                use_chat_template=use_chat_template,
                 prompt_tokens=prompt_tokens,
                 input_token_ids=input_token_ids,
                 target_token_id=target_token_id,
@@ -694,6 +703,7 @@ class BiologyAttributionRunner:
         edge_top_k: int = DEFAULT_EDGE_TOP_K,
         graph_file_dir: Path | str | None = None,
         save_pt: str | None = None,
+        use_chat_template: bool = True,
     ) -> GraphResult:
         """Generate and export a circuit-tracer-compatible graph JSON."""
 
@@ -702,7 +712,9 @@ class BiologyAttributionRunner:
             resolved_slug = slug or slugify(prompt[:50])
             labels = load_feature_labels(set(self.layers))
             print(f"[INFO] loaded {len(labels)} feature labels")
-            inputs, input_token_ids, prompt_tokens = self._inputs_for_prompt(tokenizer, prompt)
+            inputs, input_token_ids, prompt_tokens = self._inputs_for_prompt(
+                tokenizer, prompt, use_chat_template=use_chat_template
+            )
 
             state = HookState(features={}, mlp_inputs={})
             handles = self._register_hooks(model, transcoders, state)

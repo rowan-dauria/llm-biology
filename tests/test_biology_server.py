@@ -25,11 +25,15 @@ class FakeRunner:
         *,
         slug: str | None = None,
         top_k: int | None = None,
+        use_chat_template: bool = True,
     ) -> PreviewResult:
-        self.preview_calls.append({"prompt": prompt, "slug": slug, "top_k": top_k})
+        self.preview_calls.append(
+            {"prompt": prompt, "slug": slug, "top_k": top_k, "use_chat_template": use_chat_template}
+        )
         return PreviewResult(
             prompt=prompt,
             slug=slug or "fake-slug",
+            use_chat_template=use_chat_template,
             prompt_tokens=["hello"],
             input_token_ids=[1],
             target_token_id=2,
@@ -49,6 +53,7 @@ class FakeRunner:
         edge_top_k: int,
         graph_file_dir: Path | str | None = None,
         save_pt: str | None = None,
+        use_chat_template: bool = True,
     ) -> GraphResult:
         if self.fail:
             raise RuntimeError("boom")
@@ -61,6 +66,7 @@ class FakeRunner:
                 "max_feature_nodes": max_feature_nodes,
                 "edge_top_k": edge_top_k,
                 "save_pt": save_pt,
+                "use_chat_template": use_chat_template,
             }
         )
         if graph_file_dir is None:
@@ -120,9 +126,14 @@ class FakeRunner:
 
 class BiologyServerTests(unittest.TestCase):
     def test_preview_and_background_graph_job(self) -> None:
-        with run_test_server(FakeRunner()) as client:
-            preview = client.post("/api/preview", {"prompt": "hello", "slug": "demo"})
+        runner = FakeRunner()
+        with run_test_server(runner) as client:
+            preview = client.post(
+                "/api/preview",
+                {"prompt": "hello", "slug": "demo", "use_chat_template": False},
+            )
             self.assertEqual(preview["slug"], "demo")
+            self.assertFalse(preview["use_chat_template"])
             self.assertEqual(preview["target_token"]["id"], 2)
 
             job = client.post(
@@ -139,6 +150,8 @@ class BiologyServerTests(unittest.TestCase):
             self.assertEqual(finished["graph_url"], "/graph_data/demo.json")
             graph = client.get("/graph_data/demo.json")
             self.assertEqual(graph["metadata"]["slug"], "demo")
+            self.assertFalse(runner.preview_calls[0]["use_chat_template"])
+            self.assertFalse(runner.generate_calls[0]["use_chat_template"])
 
     def test_unknown_preview_id_is_404(self) -> None:
         with run_test_server(FakeRunner()) as client:
