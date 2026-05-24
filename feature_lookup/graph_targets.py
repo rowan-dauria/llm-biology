@@ -1,9 +1,11 @@
 """Pick unlabelled ``(layer, feature)`` targets from an attribution graph.
 
 Reads a frontend graph JSON written by ``circuit_graph_export.export_circuit_graph``,
-joins against the per-layer labels store, and ranks the unlabelled transcoder
-feature nodes by ``alpha * abs(target-logit effect) + (1-alpha) * weighted-degree
-centrality`` (each component min-max normalised within the unlabelled set).
+joins against the per-layer labels store, and ranks the transcoder feature nodes
+that still need attention — those absent from the store, or whose baked-in
+``clerp`` is still a ``[?] ...`` placeholder — by ``alpha * abs(target-logit
+effect) + (1-alpha) * weighted-degree centrality`` (each component min-max
+normalised within the candidate set).
 
 Pure-logic module: no torch, no transformers, no network.
 """
@@ -18,9 +20,13 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from .labels import FeatureLabelMap, load_feature_labels
+    from .labels import UNLABELLED_PREFIX, FeatureLabelMap, load_feature_labels
 except ImportError:
-    from labels import FeatureLabelMap, load_feature_labels  # type: ignore[no-redef]
+    from labels import (  # type: ignore[no-redef]
+        UNLABELLED_PREFIX,
+        FeatureLabelMap,
+        load_feature_labels,
+    )
 
 TRANSCODER_FEATURE_TYPE = "cross layer transcoder"
 
@@ -124,7 +130,15 @@ def select_unlabeled_targets(
     top_n: int | None = None,
     alpha: float = 0.5,
 ) -> list[GraphTarget]:
-    """Return unlabelled targets sorted by descending combined score."""
+    """Return targets sorted by descending combined score.
+
+    A ``(layer, feature)`` is a target if it is absent from ``labels`` *or* if
+    any of its graph nodes still carries a ``[?] ...`` placeholder ``clerp``.
+    The latter covers features labelled after this graph was built: their stale
+    placeholder clerp is selected so the downstream ``patch_graph`` rewrites it
+    from the store (no model call needed, since it is skipped as already
+    labelled).
+    """
 
     if not 0.0 <= alpha <= 1.0:
         raise ValueError(f"alpha must be in [0, 1], got {alpha}")
@@ -132,6 +146,7 @@ def select_unlabeled_targets(
     nodes, links = load_graph(graph_path)
 
     grouped: dict[tuple[int, int], dict[str, float]] = {}
+    placeholder_keys: set[tuple[int, int]] = set()
     for node in nodes:
         node_id = node.get("node_id")
         if not isinstance(node_id, str):
@@ -145,6 +160,9 @@ def select_unlabeled_targets(
             influence_raw = node.get("activation", 0.0)
         influence = abs(float(influence_raw))
         key = (layer, feature)
+        clerp = node.get("clerp")
+        if isinstance(clerp, str) and clerp.startswith(UNLABELLED_PREFIX):
+            placeholder_keys.add(key)
         entry = grouped.setdefault(key, {"target_effect": 0.0, "n_positions": 0.0})
         if influence > entry["target_effect"]:
             entry["target_effect"] = influence
@@ -152,12 +170,16 @@ def select_unlabeled_targets(
 
     centrality_map = compute_centrality(grouped.keys(), links)
 
-    unlabelled = [(key, info) for key, info in grouped.items() if key not in labels]
-    if not unlabelled:
+    candidates = [
+        (key, info)
+        for key, info in grouped.items()
+        if key not in labels or key in placeholder_keys
+    ]
+    if not candidates:
         return []
 
-    te_values = [info["target_effect"] for _, info in unlabelled]
-    ce_values = [centrality_map.get(key, 0.0) for key, _ in unlabelled]
+    te_values = [info["target_effect"] for _, info in candidates]
+    ce_values = [centrality_map.get(key, 0.0) for key, _ in candidates]
     te_norm = _minmax(te_values)
     ce_norm = _minmax(ce_values)
 
@@ -171,7 +193,7 @@ def select_unlabeled_targets(
             n_positions=int(info["n_positions"]),
         )
         for ((key, info), te, ce, te_n, ce_n) in zip(
-            unlabelled, te_values, ce_values, te_norm, ce_norm, strict=True
+            candidates, te_values, ce_values, te_norm, ce_norm, strict=True
         )
     ]
     targets.sort(key=lambda target: (-target.score, target.layer, target.feature))

@@ -158,6 +158,32 @@ class SelectTargetsTests(unittest.TestCase):
         # (2, 100) gets weight from the self-feature link counted on both ends.
         self.assertAlmostEqual(second.centrality, 0.3 + 0.3 + 0.6 + 0.1)
 
+    def test_includes_in_store_feature_with_placeholder_clerp(self) -> None:
+        # (12, 500) is in the label store but the graph still shows a stale
+        # "[?] ..." placeholder clerp (labelled after this graph was built).
+        # It must be selected so patch_graph can refresh the clerp.
+        graph = self._build_synthetic_graph()
+        for node in graph["nodes"]:
+            if node.get("node_id") == "12_500_3":
+                node["clerp"] = "[?] L12 F500"
+        with tempfile.TemporaryDirectory() as tmp:
+            graph_path = _write_graph(Path(tmp), graph)
+            labels: FeatureLabelMap = {(12, 500): _feature_label(12, 500)}
+            targets = select_unlabeled_targets(graph_path, labels, alpha=0.5)
+        keys = {(t.layer, t.feature) for t in targets}
+        self.assertIn((12, 500), keys)
+        self.assertIn((24, 700), keys)
+        self.assertIn((2, 100), keys)
+
+    def test_excludes_in_store_feature_with_real_clerp(self) -> None:
+        # Sanity check the inverse: a labelled feature with a real (non-"[?] ")
+        # clerp stays filtered out, preserving gradual label build-up.
+        with tempfile.TemporaryDirectory() as tmp:
+            graph_path = _write_graph(Path(tmp), self._build_synthetic_graph())
+            labels: FeatureLabelMap = {(12, 500): _feature_label(12, 500)}
+            targets = select_unlabeled_targets(graph_path, labels, alpha=0.5)
+        self.assertNotIn((12, 500), {(t.layer, t.feature) for t in targets})
+
     def test_top_n_truncates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             graph_path = _write_graph(Path(tmp), self._build_synthetic_graph())
