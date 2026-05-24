@@ -301,30 +301,21 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
             if rel == "graph-metadata.json":
                 self._serve_metadata(send_body=send_body)
             else:
-                self._serve_file(self.server.app.graph_file_dir, rel, send_body=send_body)
-            return
-        if self.command in {"GET", "HEAD"} and path.startswith(("/ct/data/", "/ct/graph_data/")):
-            rel = (
-                path.removeprefix("/ct/data/")
-                if path.startswith("/ct/data/")
-                else path.removeprefix("/ct/graph_data/")
-            )
-            if rel == "graph-metadata.json":
-                self._serve_metadata(send_body=send_body)
-            else:
-                self._serve_file(self.server.app.graph_file_dir, rel, send_body=send_body)
+                # Graph JSON is mutated in place by Save and the frontend fetches
+                # it with cache:'force-cache'; no-store stops a reload from serving
+                # a stale graph and dropping saved qParams. Feature files under
+                # features/ are immutable, so leave them cacheable.
+                self._serve_file(
+                    self.server.app.graph_file_dir,
+                    rel,
+                    send_body=send_body,
+                    no_store=not rel.startswith("features/"),
+                )
             return
         if self.command in {"GET", "HEAD"} and path.startswith("/features/"):
             self._serve_file(
                 self.server.app.graph_file_dir / "features",
                 path.removeprefix("/features/"),
-                send_body=send_body,
-            )
-            return
-        if self.command in {"GET", "HEAD"} and path.startswith("/ct/features/"):
-            self._serve_file(
-                self.server.app.graph_file_dir / "features",
-                path.removeprefix("/ct/features/"),
                 send_body=send_body,
             )
             return
@@ -336,12 +327,18 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
             )
             return
         if self.command in {"GET", "HEAD"} and path in {"/", "/index.html"}:
-            self._serve_file(self.server.app.static_dir, "index.html", send_body=send_body)
+            # App shell changes during development; keep it uncached so an edit
+            # is picked up on reload instead of serving a stale page/script.
+            self._serve_file(
+                self.server.app.static_dir, "index.html", send_body=send_body, no_store=True
+            )
             return
         if self.command in {"GET", "HEAD"}:
             rel = path.lstrip("/")
             if rel in {"biology-server.js", "biology-server.css"}:
-                self._serve_file(self.server.app.static_dir, rel, send_body=send_body)
+                self._serve_file(
+                    self.server.app.static_dir, rel, send_body=send_body, no_store=True
+                )
                 return
         raise RequestError(404, "not found")
 
@@ -380,12 +377,17 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
         metadata_path = self.server.app.graph_file_dir / "graph-metadata.json"
         if metadata_path.exists():
             self._serve_file(
-                self.server.app.graph_file_dir, "graph-metadata.json", send_body=send_body
+                self.server.app.graph_file_dir,
+                "graph-metadata.json",
+                send_body=send_body,
+                no_store=True,
             )
             return
         self._send_json({"graphs": []}, send_body=send_body)
 
-    def _serve_file(self, root: Path, rel_path: str, *, send_body: bool) -> None:
+    def _serve_file(
+        self, root: Path, rel_path: str, *, send_body: bool, no_store: bool = False
+    ) -> None:
         path = safe_join(root, rel_path)
         if not path.exists() or not path.is_file():
             raise RequestError(404, "file not found")
@@ -399,6 +401,8 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(content)))
+        if no_store:
+            self.send_header("Cache-Control", "no-store")
         self.end_headers()
         if send_body:
             self.wfile.write(content)
@@ -410,6 +414,7 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         if send_body:
             self.wfile.write(content)
