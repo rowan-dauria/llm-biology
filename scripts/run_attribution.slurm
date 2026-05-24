@@ -57,7 +57,9 @@ source /home/rd761/miniconda3/bin/activate
 conda activate qwen-sae
 
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
-export PYTHONPATH="/home/rd761/circuit-tracer:${PYTHONPATH:-}"
+#! circuit-tracer is an editable install in the qwen-sae env (-> mphil-project/circuit-tracer).
+#! Do NOT add the old /home/rd761/circuit-tracer checkout to PYTHONPATH; it shadows the
+#! editable install with a pre-rename copy and breaks `from ... import load_transcoder`.
 
 srun python -u /home/rd761/mphil-project/llm-biology/scripts/generate_attribution_graph.py
 
