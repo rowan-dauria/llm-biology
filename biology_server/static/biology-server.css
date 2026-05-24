@@ -25,7 +25,7 @@ body {
   gap: 10px;
 }
 
-textarea {
+.prompt-panel textarea {
   min-height: 86px;
   resize: vertical;
   border: 1px solid #bcc5cf;
@@ -41,7 +41,7 @@ textarea {
   flex-wrap: wrap;
 }
 
-label {
+.prompt-panel label {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -49,7 +49,7 @@ label {
   color: #59636e;
 }
 
-input {
+.prompt-panel input {
   height: 32px;
   box-sizing: border-box;
   border: 1px solid #bcc5cf;
@@ -72,7 +72,7 @@ input {
   padding: 3px 8px;
 }
 
-button {
+.settings-row button {
   height: 32px;
   border: 1px solid #1f2328;
   border-radius: 6px;
@@ -83,7 +83,7 @@ button {
   cursor: pointer;
 }
 
-button:disabled {
+.settings-row button:disabled {
   cursor: default;
   opacity: 0.45;
 }
@@ -138,10 +138,32 @@ button:disabled {
   white-space: pre-wrap;
 }
 
-.graph-frame {
+.nav {
+  margin: 0;
+  padding: 8px 16px;
+  border-bottom: 1px solid #e4e7eb;
+  background: #fff;
+}
+
+.nav .save-button {
+  height: 32px;
+  border: 1px solid #bcc5cf;
+  border-radius: 6px;
+  background: #fff;
+  color: #171717;
+  padding: 0 13px;
+  font: 13px system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.slider-container {
+  font-size: 13px;
+  color: #59636e;
+}
+
+#graph.cg {
   display: block;
   width: 100%;
-  height: calc(100vh - 185px);
-  border: 0;
+  height: calc(100vh - 230px);
   background: #fff;
 }

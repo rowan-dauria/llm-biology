@@ -12,7 +12,6 @@
     targetToken: document.querySelector('#target-token'),
     topTokens: document.querySelector('#top-tokens'),
     jobLog: document.querySelector('#job-log'),
-    graphFrame: document.querySelector('#graph-frame'),
   }
 
   let preview = null
@@ -25,7 +24,9 @@
   })
   els.uploadButton.addEventListener('click', uploadGraph)
 
-  const initialSlug = getUrlParam('slug')
+  const graphView = createGraphView(d3.select('.nav'), d3.select('#graph'))
+
+  const initialSlug = util.params.get('slug')
   if (initialSlug) renderGraph(initialSlug)
 
   async function previewPrompt() {
@@ -165,9 +166,184 @@
   }
 
   function renderGraph(slug) {
-    setUrlParam('slug', slug)
-    els.graphFrame.src = `/ct/index.html?slug=${encodeURIComponent(slug)}`
-    document.title = `Attribution Graph: ${slug}`
+    util.params.set('slug', slug)
+    graphView.show(slug)
+  }
+
+  // Ported from circuit-tracer's frontend index.html; keep in sync with it.
+  function createGraphView(navSel, cgSel) {
+    window.isLocalServing = true
+
+    let graphs = []
+    let visState = null
+    let sliderContainer = null
+    let navBuilt = false
+    const debouncedRender = util.debounce(render, 300)
+
+    async function show(slug) {
+      const meta = await util.getFile('./data/graph-metadata.json', false)
+      graphs = meta.graphs || []
+
+      visState = {
+        slug,
+        clickedId: util.params.get('clickedId')?.replace('null', ''),
+        isGridsnap: util.params.get('isGridsnap')?.replace('null', ''),
+      }
+
+      const currentGraph = graphs.find(g => g.slug === slug)
+      if (currentGraph && typeof currentGraph.node_threshold === 'number') {
+        visState.pruningThreshold =
+          util.params.get('pruningThreshold') || currentGraph.node_threshold || 0.4
+      }
+
+      buildNav()
+      render()
+    }
+
+    function buildNav() {
+      if (navBuilt) return
+      navBuilt = true
+
+      navSel
+        .html('')
+        .style('display', 'flex')
+        .style('align-items', 'center')
+        .style('justify-content', 'space-between')
+
+      navSel
+        .append('div.controls-container')
+        .style('display', 'flex')
+        .style('align-items', 'center')
+        .style('flex', '1')
+        .style('gap', '20px')
+
+      navSel
+        .append('button.save-button')
+        .text('Save')
+        .on('click', saveGraph)
+    }
+
+    function saveGraph() {
+      const slug = visState && visState.slug
+      if (!slug) {
+        console.error('No slug found')
+        return
+      }
+
+      const saveButton = navSel.select('.save-button')
+      saveButton.text('Saving...').attr('disabled', true).style('opacity', 0.6)
+
+      fetch(`/save_graph/${slug}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          qParams: Object.fromEntries(
+            ['pinnedIds', 'supernodes', 'linkType', 'clickedId', 'sg_pos', 'pruningThreshold', 'clerps']
+              .map(k => [k, util.params.get(k)])
+              .filter(([_k, v]) => v !== undefined && v !== null && v !== 'null')
+          ),
+        }),
+      })
+        .then(response => {
+          if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`)
+          saveButton
+            .text('Saved!')
+            .style('background-color', '#e6f7e6')
+            .style('border-color', '#8bc34a')
+          setTimeout(resetSaveButton, 2000)
+        })
+        .catch(error => {
+          console.error('Error saving graph:', error)
+          saveButton
+            .text('Error!')
+            .style('background-color', '#ffebee')
+            .style('border-color', '#f44336')
+          setTimeout(resetSaveButton, 2000)
+        })
+
+      function resetSaveButton() {
+        saveButton
+          .text('Save')
+          .attr('disabled', null)
+          .style('opacity', null)
+          .style('background-color', null)
+          .style('border-color', null)
+      }
+    }
+
+    function render() {
+      const m = graphs.find(g => g.slug == visState.slug)
+      if (!m) return
+
+      const controlsContainer = navSel.select('.controls-container')
+
+      if (typeof m.node_threshold === 'number') {
+        if (!sliderContainer) {
+          sliderContainer = controlsContainer
+            .append('div.slider-container')
+            .style('display', 'flex')
+            .style('align-items', 'center')
+            .style('gap', '8px')
+
+          sliderContainer.append('span').text('Pruning:')
+
+          sliderContainer
+            .append('input')
+            .attr('type', 'range')
+            .attr('min', 0)
+            .attr('max', m.node_threshold)
+            .attr('step', 0.01)
+            .attr('value', visState.pruningThreshold || m.node_threshold)
+            .on('input', function () {
+              visState.pruningThreshold = this.value
+              visState.clickedId = util.params.get('clickedId')?.replace('null', '')
+              util.params.set('pruningThreshold', this.value)
+              sliderContainer
+                .select('.value-display')
+                .text(parseFloat(this.value).toFixed(2))
+              debouncedRender()
+            })
+
+          sliderContainer.append('span.value-display')
+        }
+
+        sliderContainer
+          .select('input')
+          .attr('max', m.node_threshold)
+          .property('value', visState.pruningThreshold || m.node_threshold)
+        sliderContainer
+          .select('.value-display')
+          .text(parseFloat(visState.pruningThreshold || m.node_threshold).toFixed(2))
+        sliderContainer.style('display', 'flex')
+
+        if (visState.pruningThreshold === undefined) {
+          visState.pruningThreshold = m.node_threshold
+        }
+      } else {
+        if (sliderContainer) {
+          sliderContainer.remove()
+          sliderContainer = null
+        }
+        delete visState.pruningThreshold
+        util.params.set('pruningThreshold', null)
+      }
+
+      cgSel.html('')
+
+      const options = {
+        clickedId: visState.clickedId,
+        clickedIdCb: id => util.params.set('clickedId', id),
+        isGridsnap: visState.isGridsnap || true,
+      }
+      if (visState.pruningThreshold !== undefined) {
+        options.pruningThreshold = visState.pruningThreshold
+      }
+
+      initCg(cgSel, visState.slug, options)
+      document.title = 'Attribution Graph: ' + m.prompt
+    }
+
+    return { show }
   }
 
   async function postJson(url, body) {
@@ -208,20 +384,6 @@
 
   function renderError(err) {
     setStatus(err.message || String(err))
-  }
-
-  function getUrlParam(key) {
-    return new URL(window.location.href).searchParams.get(key)
-  }
-
-  function setUrlParam(key, value) {
-    const url = new URL(window.location.href)
-    if (value === null || value === undefined || value === '') {
-      url.searchParams.delete(key)
-    } else {
-      url.searchParams.set(key, value)
-    }
-    window.history.replaceState(null, '', url)
   }
 
   function formatProb(value) {
