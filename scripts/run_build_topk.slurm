@@ -43,7 +43,11 @@ PROJECT_ROOT="/home/rd761/mphil-project/llm-biology"
 LOG_DIR="$PROJECT_ROOT/slurm_logs"
 mkdir -p "$LOG_DIR"
 #! ":all" streams the entire split. Set a number (e.g. ":10000") to cap docs per worker.
-CORPUS_SPEC="hf:monology/pile-uncopyrighted:train:all"
+#! NOTE: results are saved ONLY after the full pass finishes (no checkpointing), so a
+#! timeout loses everything. At ~27 docs/s, 150k docs ~= 93 min loop + ~2 min setup/save,
+#! leaving ~25 min headroom under the 2h walltime. Raise this only if you also raise --time
+#! or add incremental checkpointing.
+CORPUS_SPEC="hf:monology/pile-uncopyrighted:train:150000"
 
 workdir="$SLURM_SUBMIT_DIR"
 cd $workdir
