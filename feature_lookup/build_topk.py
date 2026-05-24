@@ -22,7 +22,7 @@ from pathlib import Path
 import torch
 from circuit_tracer.transcoder.single_layer_transcoder import (
     SingleLayerTranscoder,
-    load_relu_transcoder,
+    load_transcoder,
 )
 from huggingface_hub import snapshot_download
 from tqdm import tqdm
@@ -114,7 +114,7 @@ def load_transcoders(device: torch.device, dtype: torch.dtype) -> dict[int, Sing
     out: dict[int, SingleLayerTranscoder] = {}
     for layer in LAYERS_TO_HOOK:
         path = transcoder_dir / f"layer_{layer}.safetensors"
-        out[layer] = load_relu_transcoder(
+        out[layer] = load_transcoder(
             str(path),
             layer,
             device=device,
