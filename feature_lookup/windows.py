@@ -86,17 +86,26 @@ def select_features(
     return selected
 
 
-def collect_prompt_texts(corpus_spec: str, needed_prompt_ids: set[int]) -> dict[int, str]:
+def collect_prompt_texts(
+    corpus_spec: str, needed_prompt_ids: set[int], num_parts: int = 1
+) -> dict[int, str]:
     if not needed_prompt_ids:
         return {}
 
-    max_needed = max(needed_prompt_ids)
+    # prompt_ids encode their shard (pid = local * num_parts + worker), so recover
+    # per worker: re-stream that worker's shard and stop once its locals are covered.
+    by_worker: dict[int, set[int]] = {}
+    for pid in needed_prompt_ids:
+        by_worker.setdefault(pid % num_parts, set()).add(pid)
+
     text_by_id: dict[int, str] = {}
-    for prompt_id, text in enumerate(iter_texts(corpus_spec)):
-        if prompt_id in needed_prompt_ids:
-            text_by_id[prompt_id] = text
-        if prompt_id >= max_needed:
-            break
+    for worker, ids in by_worker.items():
+        max_local = max(pid // num_parts for pid in ids)
+        for pid, text in iter_texts(corpus_spec, part_idx=worker, num_parts=num_parts):
+            if pid in ids:
+                text_by_id[pid] = text
+            if pid // num_parts >= max_local:
+                break
     return text_by_id
 
 
@@ -133,6 +142,7 @@ def get_windows(
                 for pid, val in zip(prompt_ids, vals, strict=True)
                 if math.isfinite(val) and val > 0
             },
+            int(layer_data.get("num_parts", 1)),
         )
 
     windows: list[Window] = []

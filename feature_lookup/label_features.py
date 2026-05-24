@@ -498,7 +498,9 @@ def _build_payloads(
     for summary in summaries:
         needed_prompt_ids.update(summary.active_prompt_ids)
 
-    text_by_prompt_id = collect_prompt_texts(corpus_spec, needed_prompt_ids)
+    text_by_prompt_id = collect_prompt_texts(
+        corpus_spec, needed_prompt_ids, int(layer_data.get("num_parts", 1))
+    )
     payloads: list[tuple[FeatureSummary, str]] = []
     for summary in summaries:
         windows = get_windows(

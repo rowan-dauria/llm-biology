@@ -154,7 +154,9 @@ def _append_layer_report(
     needed_prompt_ids: set[int] = set()
     for record in selected_records:
         needed_prompt_ids.update(active_prompt_ids(layer_data, int(record["feature"])))
-    text_by_prompt_id = collect_prompt_texts(corpus_spec, needed_prompt_ids)
+    text_by_prompt_id = collect_prompt_texts(
+        corpus_spec, needed_prompt_ids, int(layer_data.get("num_parts", 1))
+    )
 
     k = int(layer_data["K"])
     max_windows_text = "all" if max_windows is None else str(max_windows)

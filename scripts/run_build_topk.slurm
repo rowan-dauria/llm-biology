@@ -1,6 +1,6 @@
 #!/bin/bash
 #!
-#! SLURM job script: per-feature top-K activating windows on 10k Pile docs.
+#! SLURM job script: per-feature top-K activating windows over the Pile.
 #! Runs feature_lookup/build_topk.py for the 4 transcoder layers
 #! [2, 12, 24, 33] in a single forward pass over the corpus.
 #!
@@ -40,7 +40,8 @@ export OMP_NUM_THREADS=1
 PROJECT_ROOT="/home/rd761/mphil-project/llm-biology"
 LOG_DIR="$PROJECT_ROOT/slurm_logs"
 mkdir -p "$LOG_DIR"
-CORPUS_SPEC="hf:monology/pile-uncopyrighted:train:10000"
+#! ":all" streams the entire split. Set a number (e.g. ":10000") to cap docs per worker.
+CORPUS_SPEC="hf:monology/pile-uncopyrighted:train:all"
 
 workdir="$SLURM_SUBMIT_DIR"
 cd $workdir
@@ -61,8 +62,15 @@ fi
 
 echo -e "\nnumtasks=$numtasks, numnodes=$numnodes, mpi_tasks_per_node=$mpi_tasks_per_node (OMP_NUM_THREADS=$OMP_NUM_THREADS)"
 
+WORKERS="${WORKERS:-1}"
+echo "Running with WORKERS=$WORKERS"
+
+#! batch_size: tune up until VRAM is full (single A100 80GB has plenty of headroom).
+#! prefetch: pre-tokenise batches on a background thread so the GPU never waits on ingest.
 srun python -u "$PROJECT_ROOT/feature_lookup/build_topk.py" \
     --corpus_spec "$CORPUS_SPEC" \
     --k 8 \
-    --batch_size 32 \
-    --max_seq_len 256
+    --batch_size 64 \
+    --max_seq_len 256 \
+    --workers "$WORKERS" \
+    --prefetch 4

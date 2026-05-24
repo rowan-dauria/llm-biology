@@ -58,10 +58,24 @@ class Batch:
     texts: list[str]
 
 
-def _iter_hf(repo: str, split: str, n_prompts: int) -> Iterator[str]:
+def _parse_n_prompts(value: str) -> int | None:
+    """Parse the doc-count field of a corpus_spec; ``all``/``-1``/empty mean unlimited."""
+    value = value.strip().lower()
+    if value in {"", "all", "-1"}:
+        return None
+    return int(value)
+
+
+def _iter_hf(
+    repo: str, split: str, n_prompts: int | None, part_idx: int, num_parts: int
+) -> Iterator[str]:
     from datasets import load_dataset
 
     ds = load_dataset(repo, split=split, streaming=True)
+    if num_parts > 1:
+        # File-level shard when the dataset has enough underlying shards, so each
+        # worker decompresses a disjoint subset rather than the whole stream.
+        ds = ds.shard(num_shards=num_parts, index=part_idx)
     count = 0
     for row in ds:
         text = row.get("text")
@@ -69,11 +83,12 @@ def _iter_hf(repo: str, split: str, n_prompts: int) -> Iterator[str]:
             continue
         yield text
         count += 1
-        if count >= n_prompts:
+        if n_prompts is not None and count >= n_prompts:
             return
 
 
-def _iter_jsonl(path: str) -> Iterator[str]:
+def _iter_jsonl(path: str, part_idx: int, num_parts: int) -> Iterator[str]:
+    doc_idx = 0
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -81,21 +96,41 @@ def _iter_jsonl(path: str) -> Iterator[str]:
                 continue
             obj = json.loads(line)
             text = obj.get("text")
-            if text:
+            if not text:
+                continue
+            if doc_idx % num_parts == part_idx:
                 yield text
+            doc_idx += 1
 
 
-def iter_texts(corpus_spec: str) -> Iterator[str]:
+def iter_texts(
+    corpus_spec: str, *, part_idx: int = 0, num_parts: int = 1
+) -> Iterator[tuple[int, str]]:
+    """Yield ``(prompt_id, text)`` over the corpus, optionally sharded across workers.
+
+    With ``num_parts > 1`` each worker reads a disjoint slice (file-level for HF
+    datasets via ``IterableDataset.shard``), so the whole corpus is decompressed
+    once in total rather than once per worker.
+
+    ``prompt_id`` is a recovery-stable id encoding the shard: the n-th doc seen by
+    ``part_idx`` gets ``n * num_parts + part_idx``. To recover its text later,
+    decode ``worker = pid % num_parts`` / ``local = pid // num_parts`` and re-run
+    ``iter_texts(..., part_idx=worker, num_parts=num_parts)`` — the order is
+    deterministic. With ``num_parts == 1`` this is the plain enumerate index,
+    identical to the unsharded single-process layout.
+    """
     kind, _, rest = corpus_spec.partition(":")
     if not rest:
         raise ValueError(f"Bad corpus_spec: {corpus_spec!r}")
     if kind == "hf":
         repo, split, n_prompts = rest.rsplit(":", 2)
-        yield from _iter_hf(repo, split, int(n_prompts))
+        raw = _iter_hf(repo, split, _parse_n_prompts(n_prompts), part_idx, num_parts)
     elif kind == "jsonl":
-        yield from _iter_jsonl(rest)
+        raw = _iter_jsonl(rest, part_idx, num_parts)
     else:
         raise ValueError(f"Unknown corpus kind: {kind!r}")
+    for local_id, text in enumerate(raw):
+        yield local_id * num_parts + part_idx, text
 
 
 def iter_batches(
@@ -105,10 +140,12 @@ def iter_batches(
     max_seq_len: int = 256,
     batch_size: int = 8,
     device: torch.device | None = None,
+    part_idx: int = 0,
+    num_parts: int = 1,
 ) -> Iterator[Batch]:
     buf_texts: list[str] = []
     buf_ids: list[int] = []
-    for prompt_id, text in enumerate(iter_texts(corpus_spec)):
+    for prompt_id, text in iter_texts(corpus_spec, part_idx=part_idx, num_parts=num_parts):
         buf_texts.append(text)
         buf_ids.append(prompt_id)
         if len(buf_texts) == batch_size:

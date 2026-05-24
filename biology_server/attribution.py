@@ -485,6 +485,7 @@ def build_feature_examples(
             text_by_prompt_id = collect_prompt_texts(
                 str(layer_data["corpus_spec"]),
                 needed_prompt_ids,
+                int(layer_data.get("num_parts", 1)),
             )
         except Exception as exc:
             print(f"[WARN] could not load top-K windows for layer {layer}: {exc}")
