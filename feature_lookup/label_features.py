@@ -86,8 +86,8 @@ def _output_path(layer: int) -> Path:
     return DEFAULT_DIR / f"layer_{layer}.jsonl"
 
 
-def _load_topk(layer: int) -> dict[str, Any]:
-    topk_path = Path(__file__).parent.parent / "data" / "feature_topk" / f"topk_layer_{layer}.pt"
+def _load_topk(layer: int, topk_dir: Path) -> dict[str, Any]:
+    topk_path = topk_dir / f"topk_layer_{layer}.pt"
     return torch.load(topk_path, weights_only=False)
 
 
@@ -550,7 +550,7 @@ def _print_dry_run(layer: int, payloads: list[tuple[FeatureSummary, str]]) -> No
 
 
 async def _async_main(args: argparse.Namespace) -> None:
-    layer_data = _load_topk(args.layer)
+    layer_data = _load_topk(args.layer, args.topk_dir)
     summaries = select_features(
         layer_data,
         top_n=args.top_n,
@@ -661,6 +661,7 @@ def label_features_subset(
     ollama_host: str | None = None,
     corpus_spec_override: str | None = None,
     source_tag: str = "on_demand",
+    topk_dir: Path,
 ) -> dict[str, int]:
     """Label an explicit list of ``(layer, feature)`` pairs.
 
@@ -688,7 +689,7 @@ def label_features_subset(
     if not pending:
         return counts
 
-    layer_data = _load_topk(layer)
+    layer_data = _load_topk(layer, topk_dir=topk_dir)
     summaries: list[FeatureSummary] = []
     for feature in pending:
         summary = _summary_for_feature(layer_data, feature)
@@ -771,6 +772,12 @@ def label_features_subset(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--layer", type=int, required=True)
+    parser.add_argument(
+        "--topk-dir",
+        type=Path,
+        required=True,
+        help="Directory holding topk_layer_<L>.pt windows (e.g. data/feature_topk/150k-pile).",
+    )
     parser.add_argument("--top_n", type=int, default=DEFAULT_TOP_N)
     parser.add_argument("--diversity", type=int, default=DEFAULT_DIVERSITY)
     parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)

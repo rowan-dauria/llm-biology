@@ -150,6 +150,7 @@ def main() -> None:
             concurrency=args.concurrency,
             ollama_host=args.ollama_host,
             source_tag="on_demand",
+            topk_dir=args.topk_dir,
         )
         print(f"[INFO] layer {layer}: {result}")
         for key, value in result.items():
