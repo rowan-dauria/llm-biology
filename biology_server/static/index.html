@@ -12,19 +12,27 @@
 <main class="server-shell">
   <section class="prompt-panel">
     <div class="prompt-controls">
-      <textarea id="prompt" spellcheck="false">The biological function of hemoglobin is to</textarea>
+      <textarea id="prompt" spellcheck="false">Fact: the capital of the state containing Dallas is</textarea>
       <div class="settings-row">
         <label>
           Slug
           <input id="slug" type="text" placeholder="auto">
         </label>
         <label>
-          Feature nodes
-          <input id="max-feature-nodes" type="number" min="1" step="1" value="300">
+          Node threshold
+          <input id="node-threshold" type="number" min="0" max="1" step="0.01" value="0.8">
         </label>
         <label>
-          Edges
-          <input id="edge-top-k" type="number" min="0" step="1" value="20">
+          Edge threshold
+          <input id="edge-threshold" type="number" min="0" max="1" step="0.01" value="0.98">
+        </label>
+        <label>
+          Logit mass
+          <input id="logit-prob-threshold" type="number" min="0" max="1" step="0.01" value="0.95">
+        </label>
+        <label>
+          Max logits
+          <input id="max-logit-nodes" type="number" min="1" step="1" value="10">
         </label>
         <label class="checkbox-label">
           <input id="use-chat-template" type="checkbox" checked>

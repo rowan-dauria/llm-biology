@@ -24,10 +24,12 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from biology_server.attribution import (
-    DEFAULT_EDGE_TOP_K,
+    DEFAULT_EDGE_THRESHOLD,
     DEFAULT_GRAPH_DIR,
     DEFAULT_LAYERS,
-    DEFAULT_MAX_FEATURE_NODES,
+    DEFAULT_LOGIT_PROB_THRESHOLD,
+    DEFAULT_MAX_LOGIT_NODES,
+    DEFAULT_NODE_THRESHOLD,
     MODEL_ID,
     PROJECT_ROOT,
     BiologyAttributionRunner,
@@ -60,8 +62,10 @@ class GraphJob:
     prompt: str
     slug: str
     target_token_id: int
-    max_feature_nodes: int
-    edge_top_k: int
+    node_threshold: float
+    edge_threshold: float
+    logit_prob_threshold: float
+    max_logit_nodes: int
     use_chat_template: bool
     status: str = "queued"
     created_at: float = field(default_factory=time.time)
@@ -116,17 +120,32 @@ class BiologyApp:
     def enqueue_graph(self, payload: dict[str, Any]) -> dict[str, Any]:
         preview_id = require_nonempty_string(payload, "preview_id")
         slug_override = optional_string(payload, "slug")
-        max_feature_nodes = optional_int(
+        node_threshold = optional_float(
             payload,
-            "max_feature_nodes",
-            default=DEFAULT_MAX_FEATURE_NODES,
-            minimum=1,
+            "node_threshold",
+            default=DEFAULT_NODE_THRESHOLD,
+            minimum=0.0,
+            maximum=1.0,
         )
-        edge_top_k = optional_int(
+        edge_threshold = optional_float(
             payload,
-            "edge_top_k",
-            default=DEFAULT_EDGE_TOP_K,
-            minimum=0,
+            "edge_threshold",
+            default=DEFAULT_EDGE_THRESHOLD,
+            minimum=0.0,
+            maximum=1.0,
+        )
+        logit_prob_threshold = optional_float(
+            payload,
+            "logit_prob_threshold",
+            default=DEFAULT_LOGIT_PROB_THRESHOLD,
+            minimum=0.0,
+            maximum=1.0,
+        )
+        max_logit_nodes = optional_int(
+            payload,
+            "max_logit_nodes",
+            default=DEFAULT_MAX_LOGIT_NODES,
+            minimum=1,
         )
         with self._lock:
             preview = self.previews.get(preview_id)
@@ -141,8 +160,10 @@ class BiologyApp:
                 prompt=preview_result.prompt,
                 slug=slug,
                 target_token_id=preview_result.target_token_id,
-                max_feature_nodes=max_feature_nodes,
-                edge_top_k=edge_top_k,
+                node_threshold=node_threshold,
+                edge_threshold=edge_threshold,
+                logit_prob_threshold=logit_prob_threshold,
+                max_logit_nodes=max_logit_nodes,
                 use_chat_template=preview_result.use_chat_template,
             )
             self.jobs[job_id] = job
@@ -186,16 +207,18 @@ class BiologyApp:
 
         capture = StringIO()
         try:
-            with contextlib.redirect_stdout(capture), contextlib.redirect_stderr(capture):
-                result = self.runner.generate_graph(
-                    job.prompt,
-                    slug=job.slug,
-                    target_token_id=job.target_token_id,
-                    max_feature_nodes=job.max_feature_nodes,
-                    edge_top_k=job.edge_top_k,
-                    graph_file_dir=self.graph_file_dir,
-                    use_chat_template=job.use_chat_template,
-                )
+            # sending logs staight to stdout for live updates
+            # with contextlib.redirect_stdout(capture), contextlib.redirect_stderr(capture):
+            result = self.runner.generate_graph(
+                job.prompt,
+                slug=job.slug,
+                node_threshold=job.node_threshold,
+                edge_threshold=job.edge_threshold,
+                logit_prob_threshold=job.logit_prob_threshold,
+                max_logit_nodes=job.max_logit_nodes,
+                graph_file_dir=self.graph_file_dir,
+                use_chat_template=job.use_chat_template,
+            )
             self._finish_job(job_id, result, capture.getvalue())
         except Exception as exc:
             details = capture.getvalue() + traceback.format_exc()
@@ -581,6 +604,26 @@ def optional_int(payload: dict[str, Any], key: str, *, default: int, minimum: in
     return parsed
 
 
+def optional_float(
+    payload: dict[str, Any],
+    key: str,
+    *,
+    default: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    value = payload.get(key, default)
+    if isinstance(value, bool):
+        raise RequestError(400, f"{key} must be a number")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise RequestError(400, f"{key} must be a number") from exc
+    if parsed < minimum or parsed > maximum:
+        raise RequestError(400, f"{key} must be between {minimum} and {maximum}")
+    return parsed
+
+
 def optional_bool(payload: dict[str, Any], key: str, *, default: bool) -> bool:
     value = payload.get(key, default)
     if not isinstance(value, bool):
@@ -623,6 +666,10 @@ def job_to_json(job: GraphJob) -> dict[str, Any]:
         "graph_url": job.graph_url,
         "feature_nodes": job.feature_nodes,
         "links": job.links,
+        "node_threshold": job.node_threshold,
+        "edge_threshold": job.edge_threshold,
+        "logit_prob_threshold": job.logit_prob_threshold,
+        "max_logit_nodes": job.max_logit_nodes,
     }
 
 

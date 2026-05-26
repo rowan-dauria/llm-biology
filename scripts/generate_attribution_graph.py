@@ -11,10 +11,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from biology_server.attribution import (  # noqa: E402
-    DEFAULT_EDGE_TOP_K,
+    DEFAULT_EDGE_THRESHOLD,
     DEFAULT_GRAPH_DIR,
     DEFAULT_LAYERS,
-    DEFAULT_MAX_FEATURE_NODES,
+    DEFAULT_LOGIT_PROB_THRESHOLD,
+    DEFAULT_MAX_LOGIT_NODES,
+    DEFAULT_NODE_THRESHOLD,
     DEFAULT_PROMPT,
     MODEL_ID,
     BiologyAttributionRunner,
@@ -33,8 +35,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--target-token", default=None)
     parser.add_argument("--target-token-id", type=int, default=None)
-    parser.add_argument("--max-feature-nodes", type=int, default=DEFAULT_MAX_FEATURE_NODES)
-    parser.add_argument("--edge-top-k", type=int, default=DEFAULT_EDGE_TOP_K)
+    parser.add_argument("--node-threshold", type=float, default=DEFAULT_NODE_THRESHOLD)
+    parser.add_argument("--edge-threshold", type=float, default=DEFAULT_EDGE_THRESHOLD)
+    parser.add_argument(
+        "--logit-prob-threshold",
+        type=float,
+        default=DEFAULT_LOGIT_PROB_THRESHOLD,
+    )
+    parser.add_argument("--max-logit-nodes", type=int, default=DEFAULT_MAX_LOGIT_NODES)
     parser.add_argument("--graph-file-dir", type=Path, default=DEFAULT_GRAPH_DIR)
     parser.add_argument(
         "--save-pt",
@@ -59,8 +67,10 @@ def main() -> None:
         slug=args.slug,
         target_token_id=args.target_token_id,
         target_token=args.target_token,
-        max_feature_nodes=args.max_feature_nodes,
-        edge_top_k=args.edge_top_k,
+        node_threshold=args.node_threshold,
+        edge_threshold=args.edge_threshold,
+        logit_prob_threshold=args.logit_prob_threshold,
+        max_logit_nodes=args.max_logit_nodes,
         save_pt=args.save_pt,
     )
 

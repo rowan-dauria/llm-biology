@@ -12,7 +12,7 @@ import re
 import threading
 import time
 from collections import defaultdict
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +27,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenize
 from circuit_graph_export import (
     FeatureNode,
     GraphLink,
+    LogitNode,
     embedding_node_id,
     export_circuit_graph,
     feature_node_id,
@@ -45,6 +46,10 @@ DEFAULT_PROMPT = "The biological function of hemoglobin is to"
 DEFAULT_MAX_FEATURE_NODES = 300
 DEFAULT_EDGE_TOP_K = 20
 DEFAULT_LOGITS_TOP_K = 10
+DEFAULT_NODE_THRESHOLD = 0.8
+DEFAULT_EDGE_THRESHOLD = 0.98
+DEFAULT_LOGIT_PROB_THRESHOLD = 0.95
+DEFAULT_MAX_LOGIT_NODES = 4
 
 CACHE_DIR = os.getenv("HF_HOME")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -112,6 +117,7 @@ class SelectedFeature:
     clerp: str
     encoder_vector: torch.Tensor | None = None
     score_index: int | None = None
+    influence: float | None = None
 
     @property
     def node_id(self) -> str:
@@ -123,6 +129,33 @@ class TokenCandidate:
     token_id: int
     token: str
     prob: float
+
+
+@dataclass(frozen=True, slots=True)
+class LogitTarget:
+    token_id: int
+    token: str
+    prob: float
+    node_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class LogitAttributionRow:
+    target: LogitTarget
+    feature_scores: torch.Tensor
+    embedding_scores: torch.Tensor
+
+
+@dataclass(frozen=True, slots=True)
+class SourceGroup:
+    node_ids: list[str]
+    decoder_vectors: torch.Tensor
+
+
+@dataclass(frozen=True, slots=True)
+class TargetGroup:
+    node_ids: list[str]
+    encoder_vectors: torch.Tensor
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +183,7 @@ class GraphResult:
     input_token_ids: list[int]
     selected_features: list[SelectedFeature]
     links: list[GraphLink]
+    logit_targets: list[LogitTarget] = field(default_factory=list)
     pt_path: Path | None = None
 
 
@@ -462,43 +496,85 @@ def top_token_candidates(
     ]
 
 
-def select_seed_features(
+def select_logit_targets(
+    tokenizer: PreTrainedTokenizerBase,
+    last_logits: torch.Tensor,
     *,
-    active_features: list[ActiveFeature],
-    logit_scores: torch.Tensor,
-    labels: FeatureLabelMap,
-    max_feature_nodes: int,
-) -> list[SelectedFeature]:
-    if not active_features:
-        return []
-    assert len(active_features) == len(logit_scores), (
-        f"active_features length ({len(active_features)}) != logit_scores length ({len(logit_scores)})"
-    )
-    assert all(active_features[i].score_index == i for i in range(len(active_features))), (
-        "active_features list order must match logit_scores indices"
-    )
-    k = min(max_feature_nodes, len(active_features))
-    top = torch.topk(logit_scores.abs().detach().cpu(), k).indices.tolist()
-    selected: list[SelectedFeature] = []
-    for score_index in top:
-        active = active_features[int(score_index)]
-        signed = float(logit_scores[score_index].detach().cpu().item())
-        if signed == 0.0:
-            continue
-        selected.append(
-            SelectedFeature(
-                layer=active.layer,
-                pos=active.pos,
-                feature=active.feature,
-                activation=active.activation,
-                logit_weight=signed,
-                clerp=get_feature_label(labels, active.layer, active.feature),
-                encoder_vector=active.encoder_vector,
-                score_index=active.score_index,
+    pos: int,
+    prob_threshold: float = DEFAULT_LOGIT_PROB_THRESHOLD,
+    max_logit_nodes: int = DEFAULT_MAX_LOGIT_NODES,
+    target_token_id: int | None = None,
+    target_token: str | None = None,
+) -> list[LogitTarget]:
+    """Select logit nodes using the graph-pruning probability-mass rule.
+
+    By default this keeps the smallest top-probability prefix whose cumulative
+    mass reaches ``prob_threshold``, capped at ``max_logit_nodes``. Explicit
+    target-token arguments preserve the old CLI behaviour by requesting one
+    particular output logit.
+    """
+
+    if max_logit_nodes <= 0:
+        raise ValueError("max_logit_nodes must be positive")
+
+    probs = torch.softmax(last_logits.float(), dim=-1)
+    if target_token_id is not None or target_token is not None:
+        selected_token_id, selected_token, selected_prob = select_target_token(
+            tokenizer,
+            last_logits,
+            target_token_id=target_token_id,
+            target_token=target_token,
+        )
+        return [
+            LogitTarget(
+                token_id=selected_token_id,
+                token=selected_token,
+                prob=selected_prob,
+                node_id=logit_node_id(NUM_LAYERS, selected_token_id, pos),
+            )
+        ]
+
+    cap = min(max_logit_nodes, probs.shape[-1])
+    top_probs, top_idx = probs.topk(cap)
+    probs_list = [float(prob) for prob in top_probs.detach().cpu().tolist()]
+    ids_list = [int(token_id) for token_id in top_idx.detach().cpu().tolist()]
+    tokens = tokenizer.batch_decode([[tid] for tid in ids_list])
+
+    targets: list[LogitTarget] = []
+    cumulative_prob = 0.0
+    for token_id, token, prob in zip(ids_list, tokens, probs_list, strict=True):
+        targets.append(
+            LogitTarget(
+                token_id=token_id,
+                token=token,
+                prob=prob,
+                node_id=logit_node_id(NUM_LAYERS, token_id, pos),
             )
         )
-    print(f"[INFO] selected {len(selected)} feature nodes")
-    return selected
+        cumulative_prob += prob
+        if cumulative_prob >= prob_threshold:
+            break
+    return targets
+
+
+def selected_features_from_active(
+    *,
+    active_features: list[ActiveFeature],
+    labels: FeatureLabelMap,
+) -> list[SelectedFeature]:
+    return [
+        SelectedFeature(
+            layer=active.layer,
+            pos=active.pos,
+            feature=active.feature,
+            activation=active.activation,
+            logit_weight=0.0,
+            clerp=get_feature_label(labels, active.layer, active.feature),
+            encoder_vector=active.encoder_vector,
+            score_index=active.score_index,
+        )
+        for active in active_features
+    ]
 
 
 def row_links(
@@ -522,73 +598,418 @@ def row_links(
         if weight:
             candidates.append((abs(weight), embedding_node_id(vocab_idx, pos), weight))
 
+    if edge_top_k <= 0:
+        return [
+            GraphLink(source=source_id, target=target_id, weight=weight)
+            for _, source_id, weight in candidates
+        ]
+
     candidates.sort(key=lambda item: item[0], reverse=True)
-    limit = len(candidates) if edge_top_k <= 0 else edge_top_k
+    limit = min(edge_top_k, len(candidates))
     return [
         GraphLink(source=source_id, target=target_id, weight=weight)
         for _, source_id, weight in candidates[:limit]
     ]
 
 
-def build_attribution_links(
+def build_source_groups(
     *,
     selected: list[SelectedFeature],
     state: HookState,
-    active_count: int,
-    logit_feature_scores: torch.Tensor,
-    logit_embedding_scores: torch.Tensor,
-    logit_id: str,
+) -> dict[tuple[int, int], SourceGroup]:
+    entries: defaultdict[tuple[int, int], list[tuple[str, int]]] = defaultdict(list)
+    for feature in selected:
+        if feature.score_index is None:
+            continue
+        data = state.layer_features[feature.layer]
+        entries[(feature.layer, feature.pos)].append(
+            (feature.node_id, feature.score_index - data.start)
+        )
+
+    groups: dict[tuple[int, int], SourceGroup] = {}
+    for (layer, pos), group_entries in entries.items():
+        data = state.layer_features[layer]
+        local_indices = torch.tensor(
+            [local_idx for _, local_idx in group_entries],
+            dtype=torch.long,
+            device=data.decoder_vectors.device,
+        )
+        groups[(layer, pos)] = SourceGroup(
+            node_ids=[node_id for node_id, _ in group_entries],
+            decoder_vectors=data.decoder_vectors.index_select(0, local_indices),
+        )
+    return groups
+
+
+def build_target_groups(
+    *,
+    selected: list[SelectedFeature],
+) -> dict[tuple[int, int], TargetGroup]:
+    entries: defaultdict[tuple[int, int], list[SelectedFeature]] = defaultdict(list)
+    for feature in selected:
+        if feature.encoder_vector is None:
+            raise RuntimeError("Selected feature is missing its encoder vector")
+        entries[(feature.layer, feature.pos)].append(feature)
+
+    groups: dict[tuple[int, int], TargetGroup] = {}
+    for key, features in entries.items():
+        groups[key] = TargetGroup(
+            node_ids=[feature.node_id for feature in features],
+            encoder_vectors=torch.stack([feature.encoder_vector for feature in features]),
+        )
+    return groups
+
+
+def direct_feature_row_links(
+    *,
+    downstream: SelectedFeature,
+    source_groups: dict[tuple[int, int], SourceGroup],
+    state: HookState,
     input_token_ids: list[int],
-    edge_top_k: int,
 ) -> list[GraphLink]:
-    """Build graph edges from each source node into logits and selected features."""
-    # The logit row was computed before feature selection, because those scores
-    # decide which active features become graph nodes.  Convert that row first.
-    links = row_links(
-        target_id=logit_id,
-        feature_scores=logit_feature_scores,
-        embedding_scores=logit_embedding_scores,
-        selected=selected,
-        input_token_ids=input_token_ids,
-        edge_top_k=edge_top_k,
-    )
+    if downstream.encoder_vector is None:
+        raise RuntimeError("Selected feature is missing its encoder vector")
 
-    # Now treat every selected feature as a downstream target and build one
-    # incoming-edge row for it.
-    for index, downstream in enumerate(selected, start=1):
-        # Print sparse progress updates; large graphs can have hundreds of rows.
-        if index == 1 or index % 25 == 0 or index == len(selected):
-            print(f"[INFO] circuit edges {index}/{len(selected)}")
+    links: list[GraphLink] = []
+    for layer in state.layers:
+        if layer >= downstream.layer:
+            continue
+        group = source_groups.get((layer, downstream.pos))
+        if group is None:
+            continue
+        encoder = downstream.encoder_vector.to(
+            device=group.decoder_vectors.device,
+            dtype=group.decoder_vectors.dtype,
+        )
+        weights = group.decoder_vectors @ encoder
+        for source_id, weight in zip(
+            group.node_ids,
+            weights.detach().cpu().tolist(),
+            strict=True,
+        ):
+            weight = float(weight)
+            if weight:
+                links.append(GraphLink(source=source_id, target=downstream.node_id, weight=weight))
 
-        # Populate state.output_grads and state.embedding_grad with the direct
-        # standard-transcoder row for this downstream feature.
-        backward_from_feature(state, downstream)
+    if state.token_vectors is None:
+        raise RuntimeError("Token embeddings were not captured")
+    if 0 <= downstream.pos < len(input_token_ids):
+        token_vector = state.token_vectors[downstream.pos]
+        encoder = downstream.encoder_vector.to(
+            device=token_vector.device,
+            dtype=token_vector.dtype,
+        )
+        weight = float((token_vector * encoder).sum().detach().cpu().item())
+        if weight:
+            links.append(
+                GraphLink(
+                    source=embedding_node_id(input_token_ids[downstream.pos], downstream.pos),
+                    target=downstream.node_id,
+                    weight=weight,
+                )
+            )
+    return links
 
-        # A feature can only receive causal feature-to-feature edges from earlier
-        # transcoder layers in this graph construction.
-        source_layers = [layer for layer in state.layers if layer < downstream.layer]
 
-        # Contract that downstream row with activation-scaled decoder vectors for
-        # every active source feature in the allowed upstream layers.
-        feature_scores = collect_feature_scores(state, active_count, layers=source_layers)
+def direct_feature_group_links(
+    *,
+    target_layer: int,
+    target_pos: int,
+    target_group: TargetGroup,
+    source_groups: dict[tuple[int, int], SourceGroup],
+    state: HookState,
+    input_token_ids: list[int],
+) -> list[GraphLink]:
+    links: list[GraphLink] = []
+    for source_layer in state.layers:
+        if source_layer >= target_layer:
+            continue
+        source_group = source_groups.get((source_layer, target_pos))
+        if source_group is None:
+            continue
 
-        # Token embeddings are also possible source nodes, scored against the
-        # same direct residual-stream row.
-        embedding_scores = collect_embedding_scores(state)
+        encoders = target_group.encoder_vectors.to(
+            device=source_group.decoder_vectors.device,
+            dtype=source_group.decoder_vectors.dtype,
+        )
+        weights = source_group.decoder_vectors @ encoders.T
+        rows, cols = torch.nonzero(weights, as_tuple=True)
+        if rows.numel() == 0:
+            continue
+        values = weights[rows, cols].detach().cpu().tolist()
+        row_list = rows.detach().cpu().tolist()
+        col_list = cols.detach().cpu().tolist()
+        for row_idx, col_idx, weight in zip(row_list, col_list, values, strict=True):
+            links.append(
+                GraphLink(
+                    source=source_group.node_ids[int(row_idx)],
+                    target=target_group.node_ids[int(col_idx)],
+                    weight=float(weight),
+                )
+            )
 
-        # Keep only the largest-magnitude incoming sources and materialize them
-        # as frontend/export GraphLink objects targeting this feature node.
+    if state.token_vectors is None:
+        raise RuntimeError("Token embeddings were not captured")
+    if 0 <= target_pos < len(input_token_ids):
+        token_vector = state.token_vectors[target_pos]
+        encoders = target_group.encoder_vectors.to(
+            device=token_vector.device,
+            dtype=token_vector.dtype,
+        )
+        weights = encoders @ token_vector
+        for target_id, weight in zip(
+            target_group.node_ids,
+            weights.detach().cpu().tolist(),
+            strict=True,
+        ):
+            weight = float(weight)
+            if weight:
+                links.append(
+                    GraphLink(
+                        source=embedding_node_id(input_token_ids[target_pos], target_pos),
+                        target=target_id,
+                        weight=weight,
+                    )
+                )
+    return links
+
+
+def build_full_attribution_links(
+    *,
+    selected: list[SelectedFeature],
+    state: HookState,
+    logit_rows: list[LogitAttributionRow],
+    input_token_ids: list[int],
+) -> list[GraphLink]:
+    """Build unpruned attribution rows for every active feature and logit."""
+
+    links: list[GraphLink] = []
+    for row in logit_rows:
         links.extend(
             row_links(
-                target_id=downstream.node_id,
-                feature_scores=feature_scores,
-                embedding_scores=embedding_scores,
+                target_id=row.target.node_id,
+                feature_scores=row.feature_scores,
+                embedding_scores=row.embedding_scores,
                 selected=selected,
                 input_token_ids=input_token_ids,
-                edge_top_k=edge_top_k,
+                edge_top_k=0,
             )
         )
+
+    source_groups = build_source_groups(selected=selected, state=state)
+    target_groups = build_target_groups(selected=selected)
+    processed_rows = 0
+    for target_layer, target_pos in sorted(target_groups):
+        target_group = target_groups[(target_layer, target_pos)]
+        links.extend(
+            direct_feature_group_links(
+                target_layer=target_layer,
+                target_pos=target_pos,
+                target_group=target_group,
+                source_groups=source_groups,
+                state=state,
+                input_token_ids=input_token_ids,
+            )
+        )
+        processed_rows += len(target_group.node_ids)
+        print(f"[INFO] full circuit rows {processed_rows}/{len(selected)}")
     return links
+
+
+def normalized_edge_weights(
+    *,
+    links: list[GraphLink],
+    node_ids: set[str],
+) -> dict[int, float]:
+    row_sums: defaultdict[str, float] = defaultdict(float)
+    for link in links:
+        if link.source not in node_ids or link.target not in node_ids:
+            continue
+        row_sums[link.target] += abs(link.weight)
+
+    normalized: dict[int, float] = {}
+    for idx, link in enumerate(links):
+        if link.source not in node_ids or link.target not in node_ids:
+            continue
+        total = max(row_sums[link.target], 1e-8)
+        normalized[idx] = abs(link.weight) / total
+    return normalized
+
+
+def indirect_logit_influence(
+    *,
+    node_ids: set[str],
+    links: list[GraphLink],
+    logit_weights: dict[str, float],
+) -> dict[str, float]:
+    """Compute weighted logit-row path sums for the normalized adjacency.
+
+    With ``A[target, source]`` this returns, for each source node, the weighted
+    average over logit rows of ``A + A^2 + ...``. The current graph is acyclic,
+    so this sparse reverse dynamic program is exact without forming a dense
+    inverse.
+    """
+
+    normalized = normalized_edge_weights(links=links, node_ids=node_ids)
+    outgoing: defaultdict[str, list[tuple[str, float]]] = defaultdict(list)
+    for idx, weight in normalized.items():
+        link = links[idx]
+        outgoing[link.source].append((link.target, weight))
+
+    cache: dict[str, float] = {}
+    visiting: set[str] = set()
+
+    def score(node_id: str) -> float:
+        if node_id in cache:
+            return cache[node_id]
+        if node_id in visiting:
+            raise ValueError("attribution graph contains a cycle")
+        visiting.add(node_id)
+        total = 0.0
+        for target_id, edge_weight in outgoing.get(node_id, []):
+            total += edge_weight * (logit_weights.get(target_id, 0.0) + score(target_id))
+        visiting.remove(node_id)
+        cache[node_id] = total
+        return total
+
+    return {node_id: score(node_id) for node_id in node_ids}
+
+
+def cumulative_scores(
+    *,
+    scores: dict[str, float],
+    candidate_ids: list[str],
+) -> dict[str, float]:
+    indexed_scores = [
+        (idx, node_id, max(float(scores.get(node_id, 0.0)), 0.0))
+        for idx, node_id in enumerate(candidate_ids)
+    ]
+    positive = [(idx, node_id, score) for idx, node_id, score in indexed_scores if score > 0]
+    total = sum(score for _, _, score in positive)
+    if total <= 0:
+        return {}
+
+    cumulative = 0.0
+    out: dict[str, float] = {}
+    for _, node_id, score in sorted(positive, key=lambda item: (-item[2], item[0])):
+        cumulative += score / total
+        out[node_id] = min(cumulative, 1.0)
+    return out
+
+
+def keep_feature_ids_by_threshold(
+    *,
+    cumulative_by_id: dict[str, float],
+    feature_ids: list[str],
+    threshold: float,
+) -> set[str]:
+    kept = {
+        node_id
+        for node_id in feature_ids
+        if node_id in cumulative_by_id and cumulative_by_id[node_id] <= threshold
+    }
+    if kept or not cumulative_by_id:
+        return kept
+
+    best_id = min(cumulative_by_id, key=cumulative_by_id.__getitem__)
+    return {best_id}
+
+
+def prune_edges_by_thresholded_influence(
+    *,
+    links: list[GraphLink],
+    node_ids: set[str],
+    logit_weights: dict[str, float],
+    threshold: float,
+) -> list[GraphLink]:
+    normalized = normalized_edge_weights(links=links, node_ids=node_ids)
+    node_scores = indirect_logit_influence(
+        node_ids=node_ids,
+        links=links,
+        logit_weights=logit_weights,
+    )
+    for node_id, weight in logit_weights.items():
+        if node_id in node_ids:
+            node_scores[node_id] = weight
+
+    edge_scores = [
+        (idx, normalized_weight * max(node_scores.get(links[idx].target, 0.0), 0.0))
+        for idx, normalized_weight in normalized.items()
+    ]
+    positive = [(idx, score) for idx, score in edge_scores if score > 0]
+    total = sum(score for _, score in positive)
+    if total <= 0:
+        return []
+
+    cumulative = 0.0
+    cutoff_score = 0.0
+    for _idx, score in sorted(positive, key=lambda item: item[1], reverse=True):
+        cumulative += score / total
+        cutoff_score = score
+        if cumulative >= threshold:
+            break
+
+    kept_indices = {idx for idx, score in positive if score >= cutoff_score}
+    return [link for idx, link in enumerate(links) if idx in kept_indices]
+
+
+def prune_graph_by_indirect_influence(
+    *,
+    selected: list[SelectedFeature],
+    input_token_ids: list[int],
+    links: list[GraphLink],
+    logit_targets: list[LogitTarget],
+    node_threshold: float,
+    edge_threshold: float,
+) -> tuple[list[SelectedFeature], list[GraphLink]]:
+    feature_ids = [feature.node_id for feature in selected]
+    embedding_ids = [
+        embedding_node_id(vocab_idx, pos) for pos, vocab_idx in enumerate(input_token_ids)
+    ]
+    logit_weights = {target.node_id: target.prob for target in logit_targets}
+    all_node_ids = set(feature_ids) | set(embedding_ids) | set(logit_weights)
+
+    node_scores = indirect_logit_influence(
+        node_ids=all_node_ids,
+        links=links,
+        logit_weights=logit_weights,
+    )
+    cumulative_by_id = cumulative_scores(scores=node_scores, candidate_ids=feature_ids)
+    kept_feature_ids = keep_feature_ids_by_threshold(
+        cumulative_by_id=cumulative_by_id,
+        feature_ids=feature_ids,
+        threshold=node_threshold,
+    )
+    kept_node_ids = set(embedding_ids) | set(logit_weights) | kept_feature_ids
+
+    node_pruned_links = [
+        link for link in links if link.source in kept_node_ids and link.target in kept_node_ids
+    ]
+    edge_pruned_links = prune_edges_by_thresholded_influence(
+        links=node_pruned_links,
+        node_ids=kept_node_ids,
+        logit_weights=logit_weights,
+        threshold=edge_threshold,
+    )
+
+    by_id = {feature.node_id: feature for feature in selected}
+    ordered_kept_ids = sorted(
+        kept_feature_ids,
+        key=lambda node_id: cumulative_by_id.get(node_id, 1.0),
+    )
+    pruned_features = [
+        replace(
+            by_id[node_id],
+            influence=min(cumulative_by_id.get(node_id, node_threshold), node_threshold),
+        )
+        for node_id in ordered_kept_ids
+    ]
+    print(
+        "[INFO] pruned graph "
+        f"features={len(pruned_features)}/{len(selected)} "
+        f"links={len(edge_pruned_links)}/{len(links)}"
+    )
+    return pruned_features, edge_pruned_links
 
 
 def feature_nodes_from_selected(selected: list[SelectedFeature]) -> list[FeatureNode]:
@@ -599,7 +1020,9 @@ def feature_nodes_from_selected(selected: list[SelectedFeature]) -> list[Feature
             feature=feature.feature,
             activation=feature.activation,
             clerp=feature.clerp,
-            influence=abs(feature.logit_weight),
+            influence=feature.influence
+            if feature.influence is not None
+            else abs(feature.logit_weight),
         )
         for feature in selected
     ]
@@ -614,6 +1037,7 @@ def selected_feature_to_dict(feature: SelectedFeature) -> dict[str, Any]:
         "logit_weight": feature.logit_weight,
         "clerp": feature.clerp,
         "score_index": feature.score_index,
+        "influence": feature.influence,
     }
 
 
@@ -942,8 +1366,10 @@ class BiologyAttributionRunner:
         slug: str | None = None,
         target_token_id: int | None = None,
         target_token: str | None = None,
-        max_feature_nodes: int = DEFAULT_MAX_FEATURE_NODES,
-        edge_top_k: int = DEFAULT_EDGE_TOP_K,
+        node_threshold: float = DEFAULT_NODE_THRESHOLD,
+        edge_threshold: float = DEFAULT_EDGE_THRESHOLD,
+        logit_prob_threshold: float = DEFAULT_LOGIT_PROB_THRESHOLD,
+        max_logit_nodes: int = DEFAULT_MAX_LOGIT_NODES,
         graph_file_dir: Path | str | None = None,
         save_pt: str | None = None,
         use_chat_template: bool = True,
@@ -972,57 +1398,71 @@ class BiologyAttributionRunner:
                 with timed("Forward pass"):
                     outputs = model(**inputs)
                     last_logits = outputs.logits[0, -1]
-                    selected_token_id, target_token_str, target_token_prob = select_target_token(
+                    logit_targets = select_logit_targets(
                         tokenizer,
                         last_logits,
+                        pos=len(prompt_tokens) - 1,
+                        prob_threshold=logit_prob_threshold,
+                        max_logit_nodes=max_logit_nodes,
                         target_token_id=target_token_id,
                         target_token=target_token,
                     )
-                    target_logit = last_logits[selected_token_id]
+                    primary_target = logit_targets[0]
+                    target_logit = last_logits[primary_target.token_id]
                     print(
-                        f"[INFO] target token id={selected_token_id} "
-                        f"({target_token_str!r}) p={target_token_prob:.4f} "
-                        f"logit={target_logit.item():.3f}"
+                        f"[INFO] primary logit id={primary_target.token_id} "
+                        f"({primary_target.token!r}) p={primary_target.prob:.4f} "
+                        f"logit={target_logit.item():.3f}; "
+                        f"logit nodes={len(logit_targets)}"
                     )
 
                 active_features = finalize_active_features(state)
                 print(f"[INFO] active features={len(active_features)}")
+                selected = selected_features_from_active(
+                    active_features=active_features,
+                    labels=labels,
+                )
 
-                with timed("Logit attribution row"):
+                with timed("Logit attribution rows"):
                     output_embeddings = model.get_output_embeddings()
                     if output_embeddings is None:
                         raise RuntimeError(
                             "model has no output embeddings; cannot attribute logits"
                         )
-                    logit_vector = demeaned_unembed_vector(
-                        output_embeddings.weight,
-                        selected_token_id,
-                        state.final_hidden.dtype
-                        if state.final_hidden is not None
-                        else last_logits.dtype,
-                    )
-                    backward_from_final_hidden(state, logit_vector)
-                    logit_feature_scores = collect_feature_scores(state, len(active_features))
-                    logit_embedding_scores = collect_embedding_scores(state)
-                    selected = select_seed_features(
-                        active_features=active_features,
-                        logit_scores=logit_feature_scores,
-                        labels=labels,
-                        max_feature_nodes=max_feature_nodes,
-                    )
+                    logit_rows: list[LogitAttributionRow] = []
+                    for target in logit_targets:
+                        logit_vector = demeaned_unembed_vector(
+                            output_embeddings.weight,
+                            target.token_id,
+                            state.final_hidden.dtype
+                            if state.final_hidden is not None
+                            else last_logits.dtype,
+                        )
+                        backward_from_final_hidden(state, logit_vector)
+                        logit_rows.append(
+                            LogitAttributionRow(
+                                target=target,
+                                feature_scores=collect_feature_scores(state, len(active_features)),
+                                embedding_scores=collect_embedding_scores(state),
+                            )
+                        )
 
-                logit_id = logit_node_id(NUM_LAYERS, selected_token_id, len(prompt_tokens) - 1)
-
-                with timed("Circuit-tracer-style edge attribution"):
-                    all_links = build_attribution_links(
+                with timed("Full circuit edge attribution"):
+                    all_links = build_full_attribution_links(
                         selected=selected,
                         state=state,
-                        active_count=len(active_features),
-                        logit_feature_scores=logit_feature_scores,
-                        logit_embedding_scores=logit_embedding_scores,
-                        logit_id=logit_id,
+                        logit_rows=logit_rows,
                         input_token_ids=input_token_ids,
-                        edge_top_k=edge_top_k,
+                    )
+
+                with timed("Anthropic-style graph pruning"):
+                    selected, all_links = prune_graph_by_indirect_influence(
+                        selected=selected,
+                        input_token_ids=input_token_ids,
+                        links=all_links,
+                        logit_targets=logit_targets,
+                        node_threshold=node_threshold,
+                        edge_threshold=edge_threshold,
                     )
             finally:
                 for handle in handles:
@@ -1056,9 +1496,18 @@ class BiologyAttributionRunner:
                 num_layers=NUM_LAYERS,
                 feature_nodes=feature_nodes_from_selected(selected),
                 links=all_links,
-                target_token_id=selected_token_id,
-                target_token_str=target_token_str,
-                target_token_prob=target_token_prob,
+                target_token_id=primary_target.token_id,
+                target_token_str=primary_target.token,
+                target_token_prob=primary_target.prob,
+                logit_nodes=[
+                    LogitNode(
+                        vocab_idx=target.token_id,
+                        token=target.token,
+                        token_prob=target.prob,
+                    )
+                    for target in logit_targets
+                ],
+                node_threshold=node_threshold,
                 feature_examples=feature_examples,
             )
 
@@ -1072,9 +1521,10 @@ class BiologyAttributionRunner:
                     {
                         "prompt": prompt,
                         "slug": resolved_slug,
-                        "target_token_id": selected_token_id,
-                        "target_token_str": target_token_str,
-                        "target_token_prob": target_token_prob,
+                        "target_token_id": primary_target.token_id,
+                        "target_token_str": primary_target.token,
+                        "target_token_prob": primary_target.prob,
+                        "logit_targets": [asdict(target) for target in logit_targets],
                         "layers": self.layers,
                         "tokens": prompt_tokens,
                         "input_token_ids": input_token_ids,
@@ -1092,12 +1542,13 @@ class BiologyAttributionRunner:
                 prompt=prompt,
                 slug=resolved_slug,
                 graph_path=graph_path,
-                target_token_id=selected_token_id,
-                target_token_str=target_token_str,
-                target_token_prob=target_token_prob,
+                target_token_id=primary_target.token_id,
+                target_token_str=primary_target.token,
+                target_token_prob=primary_target.prob,
                 prompt_tokens=prompt_tokens,
                 input_token_ids=input_token_ids,
                 selected_features=selected,
                 links=all_links,
+                logit_targets=logit_targets,
                 pt_path=pt_path,
             )

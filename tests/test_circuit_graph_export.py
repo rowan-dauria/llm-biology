@@ -8,6 +8,7 @@ from pathlib import Path
 from circuit_graph_export import (
     FeatureNode,
     GraphLink,
+    LogitNode,
     embedding_node_id,
     export_circuit_graph,
     feature_node_id,
@@ -81,7 +82,7 @@ class CircuitGraphExportTests(unittest.TestCase):
             self.assertEqual(graph["qParams"]["clickedId"], "37_999_2")
             self.assertTrue(any(node["clerp"] == "date token" for node in graph["nodes"]))
             feature_node = next(node for node in graph["nodes"] if node["clerp"] == "date token")
-            self.assertEqual(feature_node["influence"], 1.0)
+            self.assertEqual(feature_node["influence"], 0.9)
 
             node_ids = {node["node_id"] for node in graph["nodes"]}
             for link in graph["links"]:
@@ -110,7 +111,7 @@ class CircuitGraphExportTests(unittest.TestCase):
         self.assertEqual(payload["top_logits"], [])
         self.assertEqual(payload["bottom_logits"], [])
 
-    def test_export_converts_raw_influence_to_cumulative_threshold_scores(self) -> None:
+    def test_export_preserves_precomputed_influence_scores(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             graph_path = export_circuit_graph(
                 output_dir=Path(tmp),
@@ -126,7 +127,7 @@ class CircuitGraphExportTests(unittest.TestCase):
                         feature=100,
                         activation=1.0,
                         clerp="a",
-                        influence=3.0,
+                        influence=0.75,
                     ),
                     FeatureNode(
                         layer=3,
@@ -134,7 +135,7 @@ class CircuitGraphExportTests(unittest.TestCase):
                         feature=200,
                         activation=1.0,
                         clerp="b",
-                        influence=1.0,
+                        influence=0.25,
                     ),
                 ],
                 links=[],
@@ -151,7 +152,32 @@ class CircuitGraphExportTests(unittest.TestCase):
             }
 
             self.assertEqual(influences["2_100_0"], 0.75)
-            self.assertEqual(influences["3_200_0"], 1.0)
+            self.assertEqual(influences["3_200_0"], 0.25)
+
+    def test_export_emits_multiple_logit_nodes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            graph_path = export_circuit_graph(
+                output_dir=Path(tmp),
+                slug="multi-logit",
+                prompt="hi",
+                prompt_tokens=["hi"],
+                input_token_ids=[1],
+                num_layers=36,
+                feature_nodes=[],
+                links=[],
+                target_token_id=2,
+                target_token_str=" out",
+                target_token_prob=0.5,
+                logit_nodes=[
+                    LogitNode(vocab_idx=2, token=" out", token_prob=0.5),
+                    LogitNode(vocab_idx=3, token=" alt", token_prob=0.3),
+                ],
+            )
+
+            graph = json.loads(graph_path.read_text())
+            logit_nodes = [node for node in graph["nodes"] if node["feature_type"] == "logit"]
+            self.assertEqual([node["node_id"] for node in logit_nodes], ["37_2_0", "37_3_0"])
+            self.assertEqual(graph["qParams"]["clickedId"], "37_2_0")
 
     def test_merge_qparams_filters_stale_ids_and_keeps_state(self) -> None:
         existing = {
