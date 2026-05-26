@@ -56,9 +56,50 @@ DEFAULT_WINDOW = 10
 
 @dataclass(slots=True)
 class HookState:
-    features: dict[int, torch.Tensor]
+    layers: list[int]
+    transcoders: dict[int, SingleLayerTranscoder]
     mlp_inputs: dict[int, torch.Tensor]
+    feature_values: dict[int, torch.Tensor]
+    layer_features: dict[int, LayerFeatureData]
+    output_grads: dict[int, torch.Tensor]
     embedding: torch.Tensor | None = None
+    token_vectors: torch.Tensor | None = None
+    embedding_grad: torch.Tensor | None = None
+    final_hidden: torch.Tensor | None = None
+
+    def clear_grads(self) -> None:
+        self.output_grads.clear()
+        self.embedding_grad = None
+        if self.embedding is not None:
+            self.embedding.grad = None
+
+
+@dataclass(frozen=True, slots=True)
+class LayerFeatureData:
+    positions: torch.Tensor
+    feature_ids: torch.Tensor
+    activations: torch.Tensor
+    encoder_vectors: torch.Tensor
+    decoder_vectors: torch.Tensor
+    start: int = 0
+
+    @property
+    def end(self) -> int:
+        return self.start + int(self.feature_ids.numel())
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveFeature:
+    layer: int
+    pos: int
+    feature: int
+    activation: float
+    encoder_vector: torch.Tensor
+    score_index: int
+
+    @property
+    def node_id(self) -> str:
+        return feature_node_id(self.layer, self.feature, self.pos)
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +110,8 @@ class SelectedFeature:
     activation: float
     logit_weight: float
     clerp: str
+    encoder_vector: torch.Tensor | None = None
+    score_index: int | None = None
 
     @property
     def node_id(self) -> str:
@@ -147,36 +190,169 @@ def make_embedding_hook(state: HookState):
     def hook(_module, _inputs, output):
         embedding = output.detach().clone().requires_grad_(True)
         state.embedding = embedding
+        state.token_vectors = embedding.detach().squeeze(0)
+        embedding.register_hook(lambda grad: setattr(state, "embedding_grad", grad.detach()))
         return embedding
 
     return hook
 
 
-def make_mlp_hook(
-    layer_idx: int,
-    transcoder: SingleLayerTranscoder,
-    state: HookState,
-):
-    """Replace an MLP with transcoder features and capture differentiable leaves."""
+def make_final_hidden_hook(state: HookState):
+    def hook(_module, _inputs, output):
+        state.final_hidden = output
+        return output
+
+    return hook
+
+
+def make_mlp_hook(layer_idx: int, transcoder: SingleLayerTranscoder, state: HookState):
+    """Replace an MLP and expose source vectors for attribution rows."""
 
     def hook(_module, inputs, output):
         mlp_input = inputs[0]
         state.mlp_inputs[layer_idx] = mlp_input
         with torch.no_grad():
-            features_value = transcoder.encode(mlp_input)
-        features = features_value.detach().clone().requires_grad_(True)
-        state.features[layer_idx] = features
-        reconstruction = transcoder.decode(features, mlp_input)
-        return reconstruction.to(output.dtype)
+            features = transcoder.encode(mlp_input).detach()
+            layer_data = layer_feature_data(transcoder, features.squeeze(0))
+        state.feature_values[layer_idx] = features
+        state.layer_features[layer_idx] = layer_data
+
+        feature_reconstruction = transcoder.decode(
+            features.to(transcoder.W_dec.dtype),
+            mlp_input if transcoder.W_skip is not None else None,
+        ).to(output.dtype)
+        if transcoder.W_skip is not None:
+            skip = transcoder.compute_skip(mlp_input)
+            replacement = skip + (feature_reconstruction - skip).detach()
+        else:
+            replacement = feature_reconstruction.detach().requires_grad_(True)
+        replacement.register_hook(
+            lambda grad, layer=layer_idx: state.output_grads.__setitem__(layer, grad.detach())
+        )
+        return replacement
 
     return hook
 
 
-def zero_captured_grads(state: HookState) -> None:
-    if state.embedding is not None:
-        state.embedding.grad = None
-    for features in state.features.values():
-        features.grad = None
+def layer_feature_data(
+    transcoder: SingleLayerTranscoder,
+    features: torch.Tensor,
+) -> LayerFeatureData:
+    sparse = features.to_sparse().coalesce()
+    if sparse._nnz() == 0:
+        empty_long = torch.empty(0, dtype=torch.long, device=features.device)
+        empty_vec = torch.empty(0, transcoder.d_model, dtype=features.dtype, device=features.device)
+        return LayerFeatureData(
+            positions=empty_long,
+            feature_ids=empty_long,
+            activations=torch.empty(0, dtype=features.dtype, device=features.device),
+            encoder_vectors=empty_vec,
+            decoder_vectors=empty_vec,
+        )
+
+    positions, feature_ids = sparse.indices()
+    activations = sparse.values()
+    encoder_vectors = transcoder.W_enc.index_select(0, feature_ids).to(features.dtype)
+    decoder_vectors = transcoder.W_dec.index_select(0, feature_ids).to(features.dtype)
+    decoder_vectors = decoder_vectors * activations[:, None]
+    return LayerFeatureData(
+        positions=positions,
+        feature_ids=feature_ids,
+        activations=activations,
+        encoder_vectors=encoder_vectors,
+        decoder_vectors=decoder_vectors,
+    )
+
+
+def finalize_active_features(state: HookState) -> list[ActiveFeature]:
+    active: list[ActiveFeature] = []
+    offset = 0
+    for layer in state.layers:
+        data = state.layer_features[layer]
+        state.layer_features[layer] = LayerFeatureData(
+            positions=data.positions,
+            feature_ids=data.feature_ids,
+            activations=data.activations,
+            encoder_vectors=data.encoder_vectors,
+            decoder_vectors=data.decoder_vectors,
+            start=offset,
+        )
+        for local_idx in range(data.feature_ids.numel()):
+            active.append(
+                ActiveFeature(
+                    layer=layer,
+                    pos=int(data.positions[local_idx].item()),
+                    feature=int(data.feature_ids[local_idx].item()),
+                    activation=float(data.activations[local_idx].item()),
+                    encoder_vector=data.encoder_vectors[local_idx],
+                    score_index=offset + local_idx,
+                )
+            )
+        offset += int(data.feature_ids.numel())
+    return active
+
+
+def collect_feature_scores(
+    state: HookState,
+    n_features: int,
+    *,
+    layers: list[int] | None = None,
+) -> torch.Tensor:
+    scores: torch.Tensor | None = None
+    score_layers = state.layers if layers is None else layers
+    for layer in score_layers:
+        data = state.layer_features[layer]
+        grad = state.output_grads.get(layer)
+        if grad is None:
+            raise RuntimeError(f"output gradient not captured for layer {layer}")
+        if data.feature_ids.numel() == 0:
+            continue
+        if scores is None:
+            scores = torch.zeros(n_features, dtype=data.decoder_vectors.dtype, device=grad.device)
+        assert scores is not None
+        grad_at_positions = grad[0].index_select(0, data.positions.to(grad.device))
+        layer_scores = (
+            grad_at_positions.to(data.decoder_vectors.dtype) * data.decoder_vectors
+        ).sum(dim=-1)
+        scores[data.start : data.end] = layer_scores
+    if scores is None:
+        device = state.embedding.device if state.embedding is not None else torch.device("cpu")
+        return torch.zeros(n_features, device=device)
+    return scores
+
+
+def collect_embedding_scores(state: HookState) -> torch.Tensor:
+    if state.embedding_grad is None or state.token_vectors is None:
+        raise RuntimeError("Embedding gradients were not captured")
+    return (state.embedding_grad[0].to(state.token_vectors.dtype) * state.token_vectors).sum(dim=-1)
+
+
+def demeaned_unembed_vector(
+    unembed: torch.Tensor, token_id: int, dtype: torch.dtype
+) -> torch.Tensor:
+    row = unembed[token_id]
+    return (row - unembed.mean(dim=0)).to(dtype)
+
+
+def backward_from_final_hidden(state: HookState, vector: torch.Tensor) -> None:
+    if state.final_hidden is None:
+        raise RuntimeError("Final hidden states were not captured")
+    state.clear_grads()
+    gradient = torch.zeros_like(state.final_hidden)
+    gradient[0, -1] = vector.to(device=gradient.device, dtype=gradient.dtype)
+    state.final_hidden.backward(gradient=gradient, retain_graph=True)
+
+
+def backward_from_feature(state: HookState, feature: SelectedFeature) -> None:
+    if feature.encoder_vector is None:
+        raise RuntimeError("Selected feature is missing its encoder vector")
+    state.clear_grads()
+    mlp_input = state.mlp_inputs[feature.layer]
+    gradient = torch.zeros_like(mlp_input)
+    gradient[0, feature.pos] = feature.encoder_vector.to(
+        device=gradient.device, dtype=gradient.dtype
+    )
+    mlp_input.backward(gradient=gradient, retain_graph=True)
 
 
 def load_transcoders(
@@ -264,115 +440,109 @@ def top_token_candidates(
 
 def select_seed_features(
     *,
-    state: HookState,
-    layers: list[int],
+    active_features: list[ActiveFeature],
+    logit_scores: torch.Tensor,
     labels: FeatureLabelMap,
     max_feature_nodes: int,
 ) -> list[SelectedFeature]:
-    candidates: list[SelectedFeature] = []
-    for layer in layers:
-        features = state.features[layer]
-        grads = features.grad
-        if grads is None:
-            print(f"[WARN] no logit gradient captured for layer {layer}")
+    if not active_features:
+        return []
+    assert len(active_features) == len(logit_scores), (
+        f"active_features length ({len(active_features)}) != logit_scores length ({len(logit_scores)})"
+    )
+    assert all(active_features[i].score_index == i for i in range(len(active_features))), (
+        "active_features list order must match logit_scores indices"
+    )
+    k = min(max_feature_nodes, len(active_features))
+    top = torch.topk(logit_scores.abs().detach().cpu(), k).indices.tolist()
+    selected: list[SelectedFeature] = []
+    for score_index in top:
+        active = active_features[int(score_index)]
+        signed = float(logit_scores[score_index].detach().cpu().item())
+        if signed == 0.0:
             continue
-
-        attribution = (features.detach() * grads).squeeze(0)
-        flat_abs = attribution.abs().flatten()
-        k = min(max_feature_nodes, flat_abs.numel())
-        top_abs, top_flat_idx = flat_abs.topk(k)
-        feature_dim = attribution.shape[-1]
-        feature_values = features.detach().squeeze(0)
-
-        for abs_value, flat_idx_tensor in zip(top_abs.tolist(), top_flat_idx.tolist(), strict=True):
-            if abs_value <= 0:
-                continue
-            flat_idx = int(flat_idx_tensor)
-            pos = flat_idx // feature_dim
-            feature = flat_idx % feature_dim
-            signed = float(attribution[pos, feature].item())
-            activation = float(feature_values[pos, feature].item())
-            candidates.append(
-                SelectedFeature(
-                    layer=layer,
-                    pos=pos,
-                    feature=feature,
-                    activation=activation,
-                    logit_weight=signed,
-                    clerp=get_feature_label(labels, layer, feature),
-                )
+        selected.append(
+            SelectedFeature(
+                layer=active.layer,
+                pos=active.pos,
+                feature=active.feature,
+                activation=active.activation,
+                logit_weight=signed,
+                clerp=get_feature_label(labels, active.layer, active.feature),
+                encoder_vector=active.encoder_vector,
+                score_index=active.score_index,
             )
-
-    candidates.sort(key=lambda item: abs(item.logit_weight), reverse=True)
-    selected = candidates[:max_feature_nodes]
+        )
     print(f"[INFO] selected {len(selected)} feature nodes")
     return selected
 
 
-def build_seed_links(selected: list[SelectedFeature], logit_id: str) -> list[GraphLink]:
-    return [
-        GraphLink(source=feature.node_id, target=logit_id, weight=feature.logit_weight)
-        for feature in selected
-        if feature.logit_weight != 0.0
-    ]
-
-
-def build_circuit_links(
+def row_links(
     *,
+    target_id: str,
+    feature_scores: torch.Tensor,
+    embedding_scores: torch.Tensor,
     selected: list[SelectedFeature],
-    state: HookState,
-    transcoders: dict[int, SingleLayerTranscoder],
     input_token_ids: list[int],
     edge_top_k: int,
 ) -> list[GraphLink]:
-    """Compute selected feature/input effects on each selected downstream feature."""
+    candidates: list[tuple[float, str, float]] = []
+    for feature in selected:
+        if feature.score_index is None:
+            continue
+        weight = float(feature_scores[feature.score_index].detach().cpu().item())
+        if weight and feature.node_id != target_id:
+            candidates.append((abs(weight), feature.node_id, weight))
+    for pos, vocab_idx in enumerate(input_token_ids):
+        weight = float(embedding_scores[pos].detach().cpu().item())
+        if weight:
+            candidates.append((abs(weight), embedding_node_id(vocab_idx, pos), weight))
 
-    links: list[GraphLink] = []
-    if edge_top_k <= 0:
-        return links
-    if state.embedding is None:
-        raise RuntimeError("Embedding activations were not captured")
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    limit = len(candidates) if edge_top_k <= 0 else edge_top_k
+    return [
+        GraphLink(source=source_id, target=target_id, weight=weight)
+        for _, source_id, weight in candidates[:limit]
+    ]
+
+
+def build_attribution_links(
+    *,
+    selected: list[SelectedFeature],
+    state: HookState,
+    active_count: int,
+    logit_feature_scores: torch.Tensor,
+    logit_embedding_scores: torch.Tensor,
+    logit_id: str,
+    input_token_ids: list[int],
+    edge_top_k: int,
+) -> list[GraphLink]:
+    links = row_links(
+        target_id=logit_id,
+        feature_scores=logit_feature_scores,
+        embedding_scores=logit_embedding_scores,
+        selected=selected,
+        input_token_ids=input_token_ids,
+        edge_top_k=edge_top_k,
+    )
 
     for index, downstream in enumerate(selected, start=1):
         if index == 1 or index % 25 == 0 or index == len(selected):
             print(f"[INFO] circuit edges {index}/{len(selected)}")
-
-        zero_captured_grads(state)
-        mlp_input = state.mlp_inputs[downstream.layer]
-        encoder_vec = transcoders[downstream.layer].W_enc[downstream.feature]
-        grad = torch.zeros_like(mlp_input)
-        grad[0, downstream.pos] = encoder_vec.to(device=mlp_input.device, dtype=mlp_input.dtype)
-        mlp_input.backward(gradient=grad, retain_graph=True)
-
-        candidates: list[tuple[float, str, float]] = []
-        for source in selected:
-            if source == downstream or source.layer >= downstream.layer:
-                continue
-            features = state.features[source.layer]
-            feature_grads = features.grad
-            if feature_grads is None:
-                continue
-            weight = float(
-                (
-                    features.detach()[0, source.pos, source.feature]
-                    * feature_grads[0, source.pos, source.feature]
-                ).item()
+        backward_from_feature(state, downstream)
+        source_layers = [layer for layer in state.layers if layer < downstream.layer]
+        feature_scores = collect_feature_scores(state, active_count, layers=source_layers)
+        embedding_scores = collect_embedding_scores(state)
+        links.extend(
+            row_links(
+                target_id=downstream.node_id,
+                feature_scores=feature_scores,
+                embedding_scores=embedding_scores,
+                selected=selected,
+                input_token_ids=input_token_ids,
+                edge_top_k=edge_top_k,
             )
-            if weight:
-                candidates.append((abs(weight), source.node_id, weight))
-
-        embedding_grads = state.embedding.grad
-        if embedding_grads is not None:
-            embedding_weights = (state.embedding.detach() * embedding_grads).sum(dim=-1)[0]
-            for pos, vocab_idx in enumerate(input_token_ids):
-                weight = float(embedding_weights[pos].item())
-                if weight:
-                    candidates.append((abs(weight), embedding_node_id(vocab_idx, pos), weight))
-
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        for _, source_id, weight in candidates[:edge_top_k]:
-            links.append(GraphLink(source=source_id, target=downstream.node_id, weight=weight))
-
+        )
     return links
 
 
@@ -388,6 +558,18 @@ def feature_nodes_from_selected(selected: list[SelectedFeature]) -> list[Feature
         )
         for feature in selected
     ]
+
+
+def selected_feature_to_dict(feature: SelectedFeature) -> dict[str, Any]:
+    return {
+        "layer": feature.layer,
+        "pos": feature.pos,
+        "feature": feature.feature,
+        "activation": feature.activation,
+        "logit_weight": feature.logit_weight,
+        "clerp": feature.clerp,
+        "score_index": feature.score_index,
+    }
 
 
 def compute_feature_logits(
@@ -647,6 +829,7 @@ class BiologyAttributionRunner:
                     make_mlp_hook(layer, transcoders[layer], state)
                 )
             )
+        handles.append(model.model.norm.register_forward_hook(make_final_hidden_hook(state)))
         return handles
 
     def preview(
@@ -665,7 +848,14 @@ class BiologyAttributionRunner:
             inputs, input_token_ids, prompt_tokens = self._inputs_for_prompt(
                 tokenizer, prompt, use_chat_template=use_chat_template
             )
-            state = HookState(features={}, mlp_inputs={})
+            state = HookState(
+                layers=self.layers,
+                transcoders=transcoders,
+                mlp_inputs={},
+                feature_values={},
+                layer_features={},
+                output_grads={},
+            )
             handles = self._register_hooks(model, transcoders, state)
             try:
                 with timed("Preview forward pass"):
@@ -724,7 +914,14 @@ class BiologyAttributionRunner:
                 tokenizer, prompt, use_chat_template=use_chat_template
             )
 
-            state = HookState(features={}, mlp_inputs={})
+            state = HookState(
+                layers=self.layers,
+                transcoders=transcoders,
+                mlp_inputs={},
+                feature_values={},
+                layer_features={},
+                output_grads={},
+            )
             handles = self._register_hooks(model, transcoders, state)
             try:
                 with timed("Forward pass"):
@@ -743,23 +940,42 @@ class BiologyAttributionRunner:
                         f"logit={target_logit.item():.3f}"
                     )
 
-                with timed("Feature-to-logit attribution"):
-                    target_logit.backward(retain_graph=True)
+                active_features = finalize_active_features(state)
+                print(f"[INFO] active features={len(active_features)}")
+
+                with timed("Logit attribution row"):
+                    output_embeddings = model.get_output_embeddings()
+                    if output_embeddings is None:
+                        raise RuntimeError(
+                            "model has no output embeddings; cannot attribute logits"
+                        )
+                    logit_vector = demeaned_unembed_vector(
+                        output_embeddings.weight,
+                        selected_token_id,
+                        state.final_hidden.dtype
+                        if state.final_hidden is not None
+                        else last_logits.dtype,
+                    )
+                    backward_from_final_hidden(state, logit_vector)
+                    logit_feature_scores = collect_feature_scores(state, len(active_features))
+                    logit_embedding_scores = collect_embedding_scores(state)
                     selected = select_seed_features(
-                        state=state,
-                        layers=self.layers,
+                        active_features=active_features,
+                        logit_scores=logit_feature_scores,
                         labels=labels,
                         max_feature_nodes=max_feature_nodes,
                     )
 
                 logit_id = logit_node_id(NUM_LAYERS, selected_token_id, len(prompt_tokens) - 1)
-                seed_links = build_seed_links(selected, logit_id)
 
-                with timed("Selected circuit edge attribution"):
-                    circuit_links = build_circuit_links(
+                with timed("Circuit-tracer-style edge attribution"):
+                    all_links = build_attribution_links(
                         selected=selected,
                         state=state,
-                        transcoders=transcoders,
+                        active_count=len(active_features),
+                        logit_feature_scores=logit_feature_scores,
+                        logit_embedding_scores=logit_embedding_scores,
+                        logit_id=logit_id,
                         input_token_ids=input_token_ids,
                         edge_top_k=edge_top_k,
                     )
@@ -767,7 +983,6 @@ class BiologyAttributionRunner:
                 for handle in handles:
                     handle.remove()
 
-            all_links = seed_links + circuit_links
             with timed("Per-feature direct-logit projection"), torch.no_grad():
                 output_embeddings = model.get_output_embeddings()
                 if output_embeddings is None:
@@ -818,7 +1033,9 @@ class BiologyAttributionRunner:
                         "layers": self.layers,
                         "tokens": prompt_tokens,
                         "input_token_ids": input_token_ids,
-                        "selected_features": [asdict(feature) for feature in selected],
+                        "selected_features": [
+                            selected_feature_to_dict(feature) for feature in selected
+                        ],
                         "links": [asdict(link) for link in all_links],
                         "graph_path": str(graph_path),
                     },

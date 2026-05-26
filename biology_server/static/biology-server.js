@@ -102,7 +102,7 @@
       if (job.status === 'failed') {
         setBusy(false)
         els.generateButton.disabled = false
-        setStatus('Graph generation failed')
+        setStatus(job.error ? `Graph generation failed: ${job.error}` : 'Graph generation failed')
         return
       }
       window.setTimeout(() => pollJob(jobId), 1500)
