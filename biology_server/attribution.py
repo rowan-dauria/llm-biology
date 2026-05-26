@@ -344,15 +344,39 @@ def backward_from_final_hidden(state: HookState, vector: torch.Tensor) -> None:
 
 
 def backward_from_feature(state: HookState, feature: SelectedFeature) -> None:
+    """Seed direct standard-transcoder attributions for one downstream feature.
+
+    For an upstream feature ``(l, i, t)`` and downstream feature ``(l', i', t')``,
+    the standard-transcoder attribution is nonzero only when ``t == t'`` and is
+    ``z_TC(l, i, t) * dot(f_dec(l, i), f_enc(l', i'))``.  This function therefore
+    builds the residual-stream gradient that ``collect_feature_scores`` should
+    contract with activation-scaled upstream decoder vectors, without tracing
+    through intervening model layers.
+    """
     if feature.encoder_vector is None:
         raise RuntimeError("Selected feature is missing its encoder vector")
     state.clear_grads()
+
     mlp_input = state.mlp_inputs[feature.layer]
     gradient = torch.zeros_like(mlp_input)
+
+    # The downstream encoder vector is the input-invariant read vector in the
+    # paper's formula.  Putting it only at feature.pos makes cross-token source
+    # scores exactly zero when collect_feature_scores indexes upstream positions.
     gradient[0, feature.pos] = feature.encoder_vector.to(
         device=gradient.device, dtype=gradient.dtype
     )
-    mlp_input.backward(gradient=gradient, retain_graph=True)
+
+    # Earlier transcoder outputs all write into the same residual stream, so the
+    # direct residual connection gives each causal source layer the same row
+    # vector.  Avoiding .backward() here keeps attention/MLP Jacobians out of the
+    # feature-pair attribution.
+    source_layers = [layer for layer in state.layers if layer < feature.layer]
+    for layer in source_layers:
+        state.output_grads[layer] = gradient
+
+    # Token embeddings are scored with the same direct residual row.
+    state.embedding_grad = gradient
 
 
 def load_transcoders(
