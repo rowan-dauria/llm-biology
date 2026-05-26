@@ -19,6 +19,7 @@ from biology_server.attribution import (
     PreviewResult,
     SelectedFeature,
     TokenCandidate,
+    backward_from_feature,
     collect_feature_scores,
     make_mlp_hook,
     row_links,
@@ -193,6 +194,47 @@ class BiologyServerTests(unittest.TestCase):
         self.assertEqual(scores.tolist(), [10.0, 0.0])
         with self.assertRaisesRegex(RuntimeError, "layer 12"):
             collect_feature_scores(state, 2)
+
+    def test_backward_from_feature_uses_direct_same_token_transcoder_formula(self) -> None:
+        state = HookState(
+            layers=[0, 2, 4],
+            transcoders={},
+            mlp_inputs={4: torch.zeros(1, 3, 2)},
+            feature_values={},
+            layer_features={
+                0: LayerFeatureData(
+                    positions=torch.tensor([1, 0]),
+                    feature_ids=torch.tensor([10, 11]),
+                    activations=torch.tensor([1.0, 1.0]),
+                    encoder_vectors=torch.zeros(2, 2),
+                    decoder_vectors=torch.tensor([[2.0, 4.0], [10.0, 20.0]]),
+                    start=0,
+                ),
+                2: LayerFeatureData(
+                    positions=torch.tensor([1]),
+                    feature_ids=torch.tensor([12]),
+                    activations=torch.tensor([1.0]),
+                    encoder_vectors=torch.zeros(1, 2),
+                    decoder_vectors=torch.tensor([[-1.0, 3.0]]),
+                    start=2,
+                ),
+            },
+            output_grads={},
+        )
+        downstream = SelectedFeature(
+            layer=4,
+            pos=1,
+            feature=99,
+            activation=1.0,
+            logit_weight=0.0,
+            clerp="target",
+            encoder_vector=torch.tensor([5.0, 7.0]),
+        )
+
+        backward_from_feature(state, downstream)
+        scores = collect_feature_scores(state, 3, layers=[0, 2])
+
+        self.assertEqual(scores.tolist(), [38.0, 0.0, 16.0])
 
     def test_row_links_keeps_top_feature_and_embedding_sources(self) -> None:
         selected = [
