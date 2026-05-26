@@ -8,8 +8,21 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+import torch
+from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTranscoder
+
 import biology_server.server as server_module
-from biology_server.attribution import GraphResult, PreviewResult, TokenCandidate
+from biology_server.attribution import (
+    GraphResult,
+    HookState,
+    LayerFeatureData,
+    PreviewResult,
+    SelectedFeature,
+    TokenCandidate,
+    collect_feature_scores,
+    make_mlp_hook,
+    row_links,
+)
 from biology_server.server import serve
 
 
@@ -125,6 +138,134 @@ class FakeRunner:
 
 
 class BiologyServerTests(unittest.TestCase):
+    def test_feature_score_collection_contracts_gradients_with_scaled_decoders(self) -> None:
+        state = HookState(
+            layers=[2],
+            transcoders={},
+            mlp_inputs={},
+            feature_values={},
+            layer_features={
+                2: LayerFeatureData(
+                    positions=torch.tensor([0, 1]),
+                    feature_ids=torch.tensor([10, 11]),
+                    activations=torch.tensor([2.0, 3.0]),
+                    encoder_vectors=torch.zeros(2, 2),
+                    decoder_vectors=torch.tensor([[2.0, 0.0], [0.0, 3.0]]),
+                    start=0,
+                )
+            },
+            output_grads={2: torch.tensor([[[5.0, 7.0], [11.0, 13.0]]])},
+        )
+
+        scores = collect_feature_scores(state, 2)
+
+        self.assertEqual(scores.tolist(), [10.0, 39.0])
+
+    def test_feature_score_collection_can_limit_to_causal_source_layers(self) -> None:
+        state = HookState(
+            layers=[2, 12],
+            transcoders={},
+            mlp_inputs={},
+            feature_values={},
+            layer_features={
+                2: LayerFeatureData(
+                    positions=torch.tensor([0]),
+                    feature_ids=torch.tensor([10]),
+                    activations=torch.tensor([2.0]),
+                    encoder_vectors=torch.zeros(1, 2),
+                    decoder_vectors=torch.tensor([[2.0, 0.0]]),
+                    start=0,
+                ),
+                12: LayerFeatureData(
+                    positions=torch.tensor([0]),
+                    feature_ids=torch.tensor([11]),
+                    activations=torch.tensor([3.0]),
+                    encoder_vectors=torch.zeros(1, 2),
+                    decoder_vectors=torch.tensor([[0.0, 3.0]]),
+                    start=1,
+                ),
+            },
+            output_grads={2: torch.tensor([[[5.0, 7.0]]])},
+        )
+
+        scores = collect_feature_scores(state, 2, layers=[2])
+
+        self.assertEqual(scores.tolist(), [10.0, 0.0])
+        with self.assertRaisesRegex(RuntimeError, "layer 12"):
+            collect_feature_scores(state, 2)
+
+    def test_row_links_keeps_top_feature_and_embedding_sources(self) -> None:
+        selected = [
+            SelectedFeature(
+                layer=2,
+                pos=0,
+                feature=10,
+                activation=1.0,
+                logit_weight=0.0,
+                clerp="x",
+                score_index=0,
+            ),
+            SelectedFeature(
+                layer=3,
+                pos=1,
+                feature=11,
+                activation=1.0,
+                logit_weight=0.0,
+                clerp="y",
+                score_index=1,
+            ),
+        ]
+
+        links = row_links(
+            target_id="37_2_1",
+            feature_scores=torch.tensor([0.2, -0.5]),
+            embedding_scores=torch.tensor([0.4, 0.1]),
+            selected=selected,
+            input_token_ids=[101, 102],
+            edge_top_k=2,
+        )
+
+        self.assertEqual(
+            [(link.source, link.target, round(link.weight, 3)) for link in links],
+            [("3_11_1", "37_2_1", -0.5), ("E_101_0", "37_2_1", 0.4)],
+        )
+
+    def test_mlp_hook_preserves_skip_reconstruction_value_and_skip_gradient(self) -> None:
+        transcoder = SingleLayerTranscoder(
+            d_model=2,
+            d_transcoder=2,
+            activation_function=torch.nn.ReLU(),
+            layer_idx=0,
+            skip_connection=True,
+            device=torch.device("cpu"),
+            dtype=torch.float32,
+        )
+        with torch.no_grad():
+            transcoder.W_enc.copy_(torch.eye(2))
+            transcoder.W_dec.copy_(torch.tensor([[2.0, 0.0], [0.0, 3.0]]))
+            transcoder.b_enc.zero_()
+            transcoder.b_dec.copy_(torch.tensor([0.5, -0.5]))
+            transcoder.W_skip.copy_(torch.tensor([[10.0, 0.0], [0.0, 20.0]]))
+
+        state = HookState(
+            layers=[0],
+            transcoders={0: transcoder},
+            mlp_inputs={},
+            feature_values={},
+            layer_features={},
+            output_grads={},
+        )
+        mlp_input = torch.tensor([[[1.0, 2.0]]], requires_grad=True)
+        original_output = torch.zeros_like(mlp_input)
+        replacement = make_mlp_hook(0, transcoder, state)(None, (mlp_input,), original_output)
+
+        expected = transcoder.decode(transcoder.encode(mlp_input), mlp_input)
+        self.assertTrue(torch.allclose(replacement, expected))
+
+        replacement.sum().backward()
+        self.assertTrue(torch.allclose(mlp_input.grad, torch.tensor([[[10.0, 20.0]]])))
+        self.assertTrue(torch.allclose(state.output_grads[0], torch.ones_like(replacement)))
+
     def test_preview_and_background_graph_job(self) -> None:
         runner = FakeRunner()
         with run_test_server(runner) as client:
