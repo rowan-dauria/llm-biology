@@ -13,18 +13,41 @@ from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTransco
 
 import biology_server.server as server_module
 from biology_server.attribution import (
+    GraphLink,
     GraphResult,
     HookState,
     LayerFeatureData,
+    LogitTarget,
     PreviewResult,
     SelectedFeature,
     TokenCandidate,
     backward_from_feature,
+    build_source_groups,
+    build_target_groups,
     collect_feature_scores,
+    direct_feature_group_links,
+    direct_feature_row_links,
+    indirect_logit_influence,
     make_mlp_hook,
+    prune_edges_by_thresholded_influence,
+    prune_graph_by_indirect_influence,
     row_links,
+    select_logit_targets,
 )
 from biology_server.server import serve
+from circuit_graph_export import embedding_node_id, logit_node_id
+
+
+class TinyTokenizer:
+    def batch_decode(self, token_batches: list[list[int]]) -> list[str]:
+        return [f"T{token_ids[0]}" for token_ids in token_batches]
+
+    def decode(self, token_ids: list[int]) -> str:
+        return f"T{token_ids[0]}"
+
+    def encode(self, token: str, add_special_tokens: bool = False) -> list[int]:
+        del add_special_tokens
+        return [int(token.removeprefix("T"))]
 
 
 class FakeRunner:
@@ -63,8 +86,10 @@ class FakeRunner:
         slug: str | None = None,
         target_token_id: int | None = None,
         target_token: str | None = None,
-        max_feature_nodes: int,
-        edge_top_k: int,
+        node_threshold: float,
+        edge_threshold: float,
+        logit_prob_threshold: float,
+        max_logit_nodes: int,
         graph_file_dir: Path | str | None = None,
         save_pt: str | None = None,
         use_chat_template: bool = True,
@@ -77,8 +102,10 @@ class FakeRunner:
                 "slug": slug,
                 "target_token_id": target_token_id,
                 "target_token": target_token,
-                "max_feature_nodes": max_feature_nodes,
-                "edge_top_k": edge_top_k,
+                "node_threshold": node_threshold,
+                "edge_threshold": edge_threshold,
+                "logit_prob_threshold": logit_prob_threshold,
+                "max_logit_nodes": max_logit_nodes,
                 "save_pt": save_pt,
                 "use_chat_template": use_chat_template,
             }
@@ -236,6 +263,121 @@ class BiologyServerTests(unittest.TestCase):
 
         self.assertEqual(scores.tolist(), [38.0, 0.0, 16.0])
 
+    def test_direct_feature_row_links_only_scan_same_token_upstream_sources(self) -> None:
+        state = HookState(
+            layers=[0, 2, 4],
+            transcoders={},
+            mlp_inputs={},
+            feature_values={},
+            layer_features={
+                0: LayerFeatureData(
+                    positions=torch.tensor([1, 0]),
+                    feature_ids=torch.tensor([10, 11]),
+                    activations=torch.tensor([1.0, 1.0]),
+                    encoder_vectors=torch.zeros(2, 2),
+                    decoder_vectors=torch.tensor([[2.0, 4.0], [10.0, 20.0]]),
+                    start=0,
+                ),
+                2: LayerFeatureData(
+                    positions=torch.tensor([1]),
+                    feature_ids=torch.tensor([12]),
+                    activations=torch.tensor([1.0]),
+                    encoder_vectors=torch.zeros(1, 2),
+                    decoder_vectors=torch.tensor([[-1.0, 3.0]]),
+                    start=2,
+                ),
+            },
+            output_grads={},
+            token_vectors=torch.tensor([[0.0, 0.0], [7.0, 11.0], [0.0, 0.0]]),
+        )
+        selected = [
+            SelectedFeature(0, 1, 10, 1.0, 0.0, "a", score_index=0),
+            SelectedFeature(0, 0, 11, 1.0, 0.0, "b", score_index=1),
+            SelectedFeature(2, 1, 12, 1.0, 0.0, "c", score_index=2),
+        ]
+        downstream = SelectedFeature(
+            layer=4,
+            pos=1,
+            feature=99,
+            activation=1.0,
+            logit_weight=0.0,
+            clerp="target",
+            encoder_vector=torch.tensor([5.0, 7.0]),
+        )
+
+        links = direct_feature_row_links(
+            downstream=downstream,
+            source_groups=build_source_groups(selected=selected, state=state),
+            state=state,
+            input_token_ids=[101, 102, 103],
+        )
+
+        self.assertEqual(
+            [(link.source, link.target, link.weight) for link in links],
+            [
+                ("0_10_1", "4_99_1", 38.0),
+                ("2_12_1", "4_99_1", 16.0),
+                ("E_102_1", "4_99_1", 112.0),
+            ],
+        )
+
+    def test_direct_feature_group_links_matches_row_formula_for_target_blocks(self) -> None:
+        state = HookState(
+            layers=[0, 2, 4],
+            transcoders={},
+            mlp_inputs={},
+            feature_values={},
+            layer_features={
+                0: LayerFeatureData(
+                    positions=torch.tensor([1]),
+                    feature_ids=torch.tensor([10]),
+                    activations=torch.tensor([1.0]),
+                    encoder_vectors=torch.zeros(1, 2),
+                    decoder_vectors=torch.tensor([[2.0, 4.0]]),
+                    start=0,
+                ),
+                2: LayerFeatureData(
+                    positions=torch.tensor([1]),
+                    feature_ids=torch.tensor([12]),
+                    activations=torch.tensor([1.0]),
+                    encoder_vectors=torch.zeros(1, 2),
+                    decoder_vectors=torch.tensor([[-1.0, 3.0]]),
+                    start=1,
+                ),
+            },
+            output_grads={},
+            token_vectors=torch.tensor([[0.0, 0.0], [7.0, 11.0]]),
+        )
+        sources = [
+            SelectedFeature(0, 1, 10, 1.0, 0.0, "a", score_index=0),
+            SelectedFeature(2, 1, 12, 1.0, 0.0, "b", score_index=1),
+        ]
+        targets = [
+            SelectedFeature(4, 1, 99, 1.0, 0.0, "x", encoder_vector=torch.tensor([5.0, 7.0])),
+            SelectedFeature(4, 1, 100, 1.0, 0.0, "y", encoder_vector=torch.tensor([1.0, 2.0])),
+        ]
+
+        links = direct_feature_group_links(
+            target_layer=4,
+            target_pos=1,
+            target_group=next(iter(build_target_groups(selected=targets).values())),
+            source_groups=build_source_groups(selected=sources, state=state),
+            state=state,
+            input_token_ids=[101, 102],
+        )
+
+        self.assertEqual(
+            [(link.source, link.target, link.weight) for link in links],
+            [
+                ("0_10_1", "4_99_1", 38.0),
+                ("0_10_1", "4_100_1", 10.0),
+                ("2_12_1", "4_99_1", 16.0),
+                ("2_12_1", "4_100_1", 5.0),
+                ("E_102_1", "4_99_1", 112.0),
+                ("E_102_1", "4_100_1", 29.0),
+            ],
+        )
+
     def test_row_links_keeps_top_feature_and_embedding_sources(self) -> None:
         selected = [
             SelectedFeature(
@@ -271,6 +413,116 @@ class BiologyServerTests(unittest.TestCase):
             [(link.source, link.target, round(link.weight, 3)) for link in links],
             [("3_11_1", "37_2_1", -0.5), ("E_101_0", "37_2_1", 0.4)],
         )
+
+    def test_indirect_logit_influence_uses_target_source_adjacency_orientation(self) -> None:
+        links = [GraphLink(source="feature", target="logit", weight=-2.0)]
+
+        scores = indirect_logit_influence(
+            node_ids={"feature", "logit"},
+            links=links,
+            logit_weights={"logit": 0.7},
+        )
+
+        self.assertAlmostEqual(scores["feature"], 0.7)
+        self.assertAlmostEqual(scores["logit"], 0.0)
+
+    def test_indirect_logit_influence_counts_embedding_feature_logit_paths(self) -> None:
+        links = [
+            GraphLink(source="embedding", target="feature", weight=3.0),
+            GraphLink(source="feature", target="logit", weight=5.0),
+        ]
+
+        scores = indirect_logit_influence(
+            node_ids={"embedding", "feature", "logit"},
+            links=links,
+            logit_weights={"logit": 0.4},
+        )
+
+        self.assertAlmostEqual(scores["feature"], 0.4)
+        self.assertAlmostEqual(scores["embedding"], 0.4)
+
+    def test_prune_graph_keeps_embeddings_logits_and_feature_influence_prefix(self) -> None:
+        logit_id = logit_node_id(36, 99, 0)
+        feature_a = SelectedFeature(
+            layer=2,
+            pos=0,
+            feature=10,
+            activation=1.0,
+            logit_weight=0.0,
+            clerp="a",
+        )
+        feature_b = SelectedFeature(
+            layer=3,
+            pos=0,
+            feature=11,
+            activation=1.0,
+            logit_weight=0.0,
+            clerp="b",
+        )
+        links = [
+            GraphLink(source=embedding_node_id(1, 0), target=feature_a.node_id, weight=2.0),
+            GraphLink(source=feature_a.node_id, target=logit_id, weight=3.0),
+            GraphLink(source=embedding_node_id(1, 0), target=feature_b.node_id, weight=4.0),
+        ]
+
+        pruned_features, pruned_links = prune_graph_by_indirect_influence(
+            selected=[feature_a, feature_b],
+            input_token_ids=[1],
+            links=links,
+            logit_targets=[LogitTarget(token_id=99, token="T99", prob=0.9, node_id=logit_id)],
+            node_threshold=0.8,
+            edge_threshold=1.0,
+        )
+
+        self.assertEqual([feature.node_id for feature in pruned_features], [feature_a.node_id])
+        self.assertEqual(
+            {(link.source, link.target) for link in pruned_links},
+            {
+                (embedding_node_id(1, 0), feature_a.node_id),
+                (feature_a.node_id, logit_id),
+            },
+        )
+
+    def test_edge_pruning_uses_target_score_and_preserves_signed_weights(self) -> None:
+        links = [
+            GraphLink(source="a", target="c", weight=-2.0),
+            GraphLink(source="b", target="c", weight=1.0),
+            GraphLink(source="c", target="logit", weight=1.0),
+        ]
+
+        pruned = prune_edges_by_thresholded_influence(
+            links=links,
+            node_ids={"a", "b", "c", "logit"},
+            logit_weights={"logit": 1.0},
+            threshold=0.6,
+        )
+
+        self.assertEqual(
+            [(link.source, link.target, link.weight) for link in pruned],
+            [("a", "c", -2.0), ("c", "logit", 1.0)],
+        )
+
+    def test_select_logit_targets_reaches_probability_mass_and_caps_count(self) -> None:
+        tokenizer = TinyTokenizer()
+        logits = torch.log(torch.tensor([0.50, 0.30, 0.10, 0.05, 0.05]))
+
+        targets = select_logit_targets(
+            tokenizer,
+            logits,
+            pos=4,
+            prob_threshold=0.75,
+            max_logit_nodes=10,
+        )
+        capped = select_logit_targets(
+            tokenizer,
+            logits,
+            pos=4,
+            prob_threshold=0.99,
+            max_logit_nodes=3,
+        )
+
+        self.assertEqual([target.token_id for target in targets], [0, 1])
+        self.assertEqual(len(capped), 3)
 
     def test_mlp_hook_preserves_skip_reconstruction_value_and_skip_gradient(self) -> None:
         transcoder = SingleLayerTranscoder(
@@ -323,8 +575,10 @@ class BiologyServerTests(unittest.TestCase):
                 "/api/graphs",
                 {
                     "preview_id": preview["preview_id"],
-                    "max_feature_nodes": 7,
-                    "edge_top_k": 3,
+                    "node_threshold": 0.7,
+                    "edge_threshold": 0.9,
+                    "logit_prob_threshold": 0.95,
+                    "max_logit_nodes": 5,
                 },
                 expected_status=202,
             )
@@ -335,6 +589,9 @@ class BiologyServerTests(unittest.TestCase):
             self.assertEqual(graph["metadata"]["slug"], "demo")
             self.assertFalse(runner.preview_calls[0]["use_chat_template"])
             self.assertFalse(runner.generate_calls[0]["use_chat_template"])
+            self.assertEqual(runner.generate_calls[0]["node_threshold"], 0.7)
+            self.assertEqual(runner.generate_calls[0]["edge_threshold"], 0.9)
+            self.assertEqual(runner.generate_calls[0]["max_logit_nodes"], 5)
 
     def test_unknown_preview_id_is_404(self) -> None:
         with run_test_server(FakeRunner()) as client:

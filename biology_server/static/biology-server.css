@@ -72,8 +72,10 @@ body {
   width: 220px;
 }
 
-#max-feature-nodes,
-#edge-top-k {
+#node-threshold,
+#edge-threshold,
+#logit-prob-threshold,
+#max-logit-nodes {
   width: 96px;
 }
 

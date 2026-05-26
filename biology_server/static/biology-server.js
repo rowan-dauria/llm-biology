@@ -2,8 +2,10 @@
   const els = {
     prompt: document.querySelector('#prompt'),
     slug: document.querySelector('#slug'),
-    maxFeatureNodes: document.querySelector('#max-feature-nodes'),
-    edgeTopK: document.querySelector('#edge-top-k'),
+    nodeThreshold: document.querySelector('#node-threshold'),
+    edgeThreshold: document.querySelector('#edge-threshold'),
+    logitProbThreshold: document.querySelector('#logit-prob-threshold'),
+    maxLogitNodes: document.querySelector('#max-logit-nodes'),
     useChatTemplate: document.querySelector('#use-chat-template'),
     uploadFile: document.querySelector('#upload-file'),
     previewButton: document.querySelector('#preview-button'),
@@ -71,8 +73,10 @@
       const job = await postJson('/api/graphs', {
         preview_id: preview.preview_id,
         slug: cleanValue(els.slug.value),
-        max_feature_nodes: Number(els.maxFeatureNodes.value),
-        edge_top_k: Number(els.edgeTopK.value),
+        node_threshold: Number(els.nodeThreshold.value),
+        edge_threshold: Number(els.edgeThreshold.value),
+        logit_prob_threshold: Number(els.logitProbThreshold.value),
+        max_logit_nodes: Number(els.maxLogitNodes.value),
       })
       activeJobId = job.job_id
       pollJob(job.job_id)

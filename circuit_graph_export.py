@@ -28,6 +28,13 @@ class GraphLink:
     weight: float
 
 
+@dataclass(frozen=True, slots=True)
+class LogitNode:
+    vocab_idx: int
+    token: str
+    token_prob: float
+
+
 def cantor_pair(x: int, y: int) -> int:
     """Pair two non-negative ints using the frontend's expected Cantor map."""
 
@@ -269,6 +276,8 @@ def export_circuit_graph(
     target_token_id: int,
     target_token_str: str,
     target_token_prob: float,
+    logit_nodes: list[LogitNode] | None = None,
+    node_threshold: float | None = None,
     feature_examples: dict[int, dict[str, Any]] | None = None,
     scan: str = LOCAL_SCAN,
 ) -> Path:
@@ -279,20 +288,27 @@ def export_circuit_graph(
     graph_path = out_dir / f"{slug}.json"
     existing_qparams = _read_existing_qparams(graph_path)
 
-    logit_id = logit_node_id(num_layers, target_token_id, len(prompt_tokens) - 1)
-    feature_nodes = _with_cumulative_influence(feature_nodes)
-    nodes = [_feature_node_to_json(node) for node in feature_nodes]
-    nodes.extend(
-        _embedding_node_to_json(pos, vocab_idx) for pos, vocab_idx in enumerate(input_token_ids)
-    )
-    nodes.append(
-        _logit_node_to_json(
-            num_layers=num_layers,
-            pos=len(prompt_tokens) - 1,
+    logit_nodes = logit_nodes or [
+        LogitNode(
             vocab_idx=target_token_id,
             token=target_token_str,
             token_prob=target_token_prob,
         )
+    ]
+    default_logit_id = logit_node_id(num_layers, logit_nodes[0].vocab_idx, len(prompt_tokens) - 1)
+    nodes = [_feature_node_to_json(node) for node in feature_nodes]
+    nodes.extend(
+        _embedding_node_to_json(pos, vocab_idx) for pos, vocab_idx in enumerate(input_token_ids)
+    )
+    nodes.extend(
+        _logit_node_to_json(
+            num_layers=num_layers,
+            pos=len(prompt_tokens) - 1,
+            vocab_idx=logit.vocab_idx,
+            token=logit.token,
+            token_prob=logit.token_prob,
+        )
+        for logit in logit_nodes
     )
 
     node_ids = {node["node_id"] for node in nodes}
@@ -310,13 +326,15 @@ def export_circuit_graph(
         "prompt_tokens": prompt_tokens,
         "prompt": prompt,
         "node_threshold": (
-            1.0 if any(node.influence is not None for node in feature_nodes) else None
+            node_threshold
+            if node_threshold is not None
+            else (1.0 if any(node.influence is not None for node in feature_nodes) else None)
         ),
         "schema_version": 1,
     }
     graph = {
         "metadata": metadata,
-        "qParams": merge_qparams(existing_qparams, node_ids, logit_id),
+        "qParams": merge_qparams(existing_qparams, node_ids, default_logit_id),
         "nodes": nodes,
         "links": [
             {"source": link.source, "target": link.target, "weight": link.weight}
