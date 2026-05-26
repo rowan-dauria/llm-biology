@@ -541,6 +541,9 @@ def build_attribution_links(
     input_token_ids: list[int],
     edge_top_k: int,
 ) -> list[GraphLink]:
+    """Build graph edges from each source node into logits and selected features."""
+    # The logit row was computed before feature selection, because those scores
+    # decide which active features become graph nodes.  Convert that row first.
     links = row_links(
         target_id=logit_id,
         feature_scores=logit_feature_scores,
@@ -550,13 +553,31 @@ def build_attribution_links(
         edge_top_k=edge_top_k,
     )
 
+    # Now treat every selected feature as a downstream target and build one
+    # incoming-edge row for it.
     for index, downstream in enumerate(selected, start=1):
+        # Print sparse progress updates; large graphs can have hundreds of rows.
         if index == 1 or index % 25 == 0 or index == len(selected):
             print(f"[INFO] circuit edges {index}/{len(selected)}")
+
+        # Populate state.output_grads and state.embedding_grad with the direct
+        # standard-transcoder row for this downstream feature.
         backward_from_feature(state, downstream)
+
+        # A feature can only receive causal feature-to-feature edges from earlier
+        # transcoder layers in this graph construction.
         source_layers = [layer for layer in state.layers if layer < downstream.layer]
+
+        # Contract that downstream row with activation-scaled decoder vectors for
+        # every active source feature in the allowed upstream layers.
         feature_scores = collect_feature_scores(state, active_count, layers=source_layers)
+
+        # Token embeddings are also possible source nodes, scored against the
+        # same direct residual-stream row.
         embedding_scores = collect_embedding_scores(state)
+
+        # Keep only the largest-magnitude incoming sources and materialize them
+        # as frontend/export GraphLink objects targeting this feature node.
         links.extend(
             row_links(
                 target_id=downstream.node_id,
