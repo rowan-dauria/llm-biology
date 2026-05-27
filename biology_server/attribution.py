@@ -7,6 +7,7 @@ and frontend export are custom project code.
 
 from __future__ import annotations
 
+import gc
 import os
 import re
 import threading
@@ -29,6 +30,11 @@ from transformers.masking_utils import ALL_MASK_ATTENTION_FUNCTIONS, eager_mask
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 from transformers.models.qwen3.modeling_qwen3 import Qwen3RMSNorm, repeat_kv
 
+from biology_server_t_lens.memory_profile import (
+    memory_checkpoint,
+    memory_profile_call,
+    memory_scope,
+)
 from circuit_graph_export import (
     FeatureNode,
     GraphLink,
@@ -55,6 +61,8 @@ DEFAULT_NODE_THRESHOLD = 0.8
 DEFAULT_EDGE_THRESHOLD = 0.98
 DEFAULT_LOGIT_PROB_THRESHOLD = 0.95
 DEFAULT_MAX_LOGIT_NODES = 4
+DEFAULT_BATCH_SIZE = 128
+DEFAULT_UPDATE_INTERVAL = 1
 
 CACHE_DIR = os.getenv("HF_HOME")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -633,20 +641,83 @@ def selected_features_from_active(
     *,
     active_features: list[ActiveFeature],
     labels: FeatureLabelMap,
+    logit_weights: dict[int, float] | None = None,
 ) -> list[SelectedFeature]:
+    logit_weights = logit_weights or {}
     return [
         SelectedFeature(
             layer=active.layer,
             pos=active.pos,
             feature=active.feature,
             activation=active.activation,
-            logit_weight=0.0,
+            logit_weight=float(logit_weights.get(active.score_index, 0.0)),
             clerp=get_feature_label(labels, active.layer, active.feature),
             encoder_vector=active.encoder_vector,
             score_index=active.score_index,
         )
         for active in active_features
     ]
+
+
+def logit_weights_from_dense_matrix(
+    *,
+    dense_edge_matrix: torch.Tensor,
+    selected: list[ActiveFeature],
+    logit_targets: list[LogitTarget],
+    n_pos: int,
+) -> dict[int, float]:
+    """Signed direct logit contribution per selected feature score index."""
+
+    weights: dict[int, float] = {}
+    n_selected = len(selected)
+    for col, feature in enumerate(selected):
+        total = 0.0
+        for logit_idx, target in enumerate(logit_targets):
+            row = n_selected + n_pos + logit_idx
+            total += float(target.prob) * float(dense_edge_matrix[row, col].item())
+        weights[feature.score_index] = total
+    return weights
+
+
+def dense_edge_matrix_links(
+    *,
+    selected: list[SelectedFeature],
+    input_token_ids: list[int],
+    logit_targets: list[LogitTarget],
+    dense_edge_matrix: torch.Tensor,
+) -> list[GraphLink]:
+    """Translate a packed ``A[target, source]`` matrix into signed links."""
+
+    node_ids = [feature.node_id for feature in selected]
+    node_ids.extend(
+        embedding_node_id(vocab_idx, pos) for pos, vocab_idx in enumerate(input_token_ids)
+    )
+    node_ids.extend(target.node_id for target in logit_targets)
+
+    if dense_edge_matrix.shape != (len(node_ids), len(node_ids)):
+        raise ValueError(
+            "dense_edge_matrix shape does not match packed node order: "
+            f"{tuple(dense_edge_matrix.shape)} vs {(len(node_ids), len(node_ids))}"
+        )
+
+    links: list[GraphLink] = []
+    matrix = dense_edge_matrix.detach().cpu()
+    for target_idx, target_id in enumerate(node_ids):
+        row = matrix[target_idx]
+        source_indices = row.nonzero(as_tuple=False).flatten().tolist()
+        for source_idx in source_indices:
+            if source_idx == target_idx:
+                continue
+            weight = float(row[source_idx].item())
+            if weight:
+                links.append(
+                    GraphLink(
+                        source=node_ids[source_idx],
+                        target=target_id,
+                        weight=weight,
+                    )
+                )
+    return links
 
 
 def row_links(
@@ -994,7 +1065,7 @@ def compute_feature_logits(
         decoder = transcoders[layer].W_dec
         idx = torch.tensor(feature_ids, dtype=torch.long, device=decoder.device)
         rows = decoder.index_select(0, idx).to(unembed.dtype)
-        logits = rows @ unembed.t()
+        logits = rows @ unembed if unembed.shape[0] == rows.shape[-1] else rows @ unembed.t()
         cap = min(top_k, logits.shape[-1])
         _, top_idx = logits.topk(cap, dim=-1)
         _, bot_idx = logits.topk(cap, dim=-1, largest=False)
@@ -1113,7 +1184,7 @@ def resolve_pt_path(save_pt: str | None, slug: str) -> Path | None:
 
 
 class BiologyAttributionRunner:
-    """Lazy-loaded, lock-serialized Qwen attribution runner."""
+    """Lazy-loaded, lock-serialized TransformerLens Qwen attribution runner."""
 
     def __init__(
         self,
@@ -1122,64 +1193,137 @@ class BiologyAttributionRunner:
         model_id: str = MODEL_ID,
         graph_file_dir: Path | str = DEFAULT_GRAPH_DIR,
         topk_dir: Path | str = DEFAULT_TOPK_DIR,
-        preview_top_k: int = 5,
+        preview_top_k: int = DEFAULT_LOGITS_TOP_K,
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        max_feature_nodes: int = DEFAULT_MAX_FEATURE_NODES,
+        update_interval: int = DEFAULT_UPDATE_INTERVAL,
     ) -> None:
         self.layers = list(layers or DEFAULT_LAYERS)
         self.model_id = model_id
         self.graph_file_dir = Path(graph_file_dir)
         self.topk_dir = Path(topk_dir)
         self.preview_top_k = preview_top_k
+        self.batch_size = batch_size
+        self.max_feature_nodes = max_feature_nodes
+        self.update_interval = update_interval
         self._lock = threading.RLock()
         self._device: torch.device | None = None
         self._dtype: torch.dtype | None = None
         self._tokenizer: PreTrainedTokenizerBase | None = None
+        self._preview_model: Any | None = None
         self._model: Any | None = None
         self._transcoders: dict[int, SingleLayerTranscoder] | None = None
 
-    def _ensure_loaded(self) -> None:
-        if self._model is not None:
-            return
+    def _ensure_device_dtype(self) -> tuple[torch.device, torch.dtype]:
+        if self._device is None or self._dtype is None:
+            self._device, self._dtype = pick_device_dtype()
+        return self._device, self._dtype
 
-        device, dtype = pick_device_dtype()
-        print(f"[INFO] device={device} dtype={dtype} layers={self.layers}")
-        transcoders = load_transcoders(self.layers, device=device, dtype=dtype)
+    def _ensure_tokenizer(self) -> PreTrainedTokenizerBase:
+        tokenizer = self._tokenizer
+        if tokenizer is not None:
+            return tokenizer
 
-        with timed("Loading model"):
+        with memory_scope("tokenizer:from_pretrained"):
             tokenizer = AutoTokenizer.from_pretrained(
                 self.model_id,
                 cache_dir=CACHE_DIR,
                 trust_remote_code=True,
             )
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
-
-            model = AutoModelForCausalLM.from_pretrained(
-                self.model_id,
-                cache_dir=CACHE_DIR,
-                torch_dtype=dtype,
-                trust_remote_code=True,
-            )
-            model.to(device).eval()
-            for param in model.parameters():
-                param.requires_grad_(False)
-            install_freezes(model)
-
-        actual_layers = len(model.model.layers)
-        if actual_layers != NUM_LAYERS:
-            print(f"[WARN] expected {NUM_LAYERS} layers, model has {actual_layers}")
-
-        self._device = device
-        self._dtype = dtype
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
         self._tokenizer = tokenizer
-        self._model = model
-        self._transcoders = transcoders
+        memory_checkpoint("tokenizer:ready")
+        return tokenizer
+
+    def _empty_device_cache(self) -> None:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        if torch.backends.mps.is_available() and hasattr(torch, "mps"):
+            torch.mps.empty_cache()
+
+    def _release_preview_model(self) -> None:
+        if self._preview_model is None:
+            return
+        memory_checkpoint("preview_model:before release")
+        self._preview_model = None
+        gc.collect()
+        self._empty_device_cache()
+        memory_checkpoint("preview_model:after release")
+
+    def _ensure_loaded(self, *, include_transcoders: bool = True) -> None:
+        memory_checkpoint(f"ensure_loaded:start include_transcoders={include_transcoders}")
+        device, dtype = self._ensure_device_dtype()
+        print(f"[INFO] device={device} dtype={dtype} layers={self.layers}")
+        memory_checkpoint("ensure_loaded:after device dtype")
+
+        if self._model is None:
+            from biology_server_t_lens.tl_model import load_replacement_model
+
+            self._release_preview_model()
+            tokenizer = self._ensure_tokenizer()
+            with timed("Loading model"):
+                model = memory_profile_call(
+                    "tl_model:load_replacement_model",
+                    load_replacement_model,
+                    self.model_id,
+                    device=device,
+                    dtype=dtype,
+                    cache_dir=CACHE_DIR,
+                )
+
+            actual_layers = model.cfg.n_layers
+            if actual_layers != NUM_LAYERS:
+                print(f"[WARN] expected {NUM_LAYERS} layers, model has {actual_layers}")
+
+            self._tokenizer = tokenizer
+            self._model = model
+            memory_checkpoint("ensure_loaded:model stored")
+
+        if include_transcoders and self._transcoders is None:
+            self._transcoders = memory_profile_call(
+                "transcoders:load",
+                load_transcoders,
+                self.layers,
+                device=device,
+                dtype=dtype,
+            )
+        memory_checkpoint(f"ensure_loaded:end include_transcoders={include_transcoders}")
 
     def _loaded(self) -> tuple[Any, PreTrainedTokenizerBase, dict[int, SingleLayerTranscoder]]:
-        self._ensure_loaded()
+        self._ensure_loaded(include_transcoders=True)
         assert self._model is not None
         assert self._tokenizer is not None
         assert self._transcoders is not None
         return self._model, self._tokenizer, self._transcoders
+
+    def _loaded_for_preview(self) -> tuple[Any, PreTrainedTokenizerBase]:
+        memory_checkpoint("preview_load:start")
+        device, dtype = self._ensure_device_dtype()
+        print(f"[INFO] device={device} dtype={dtype} layers={self.layers}")
+        tokenizer = self._ensure_tokenizer()
+        if self._preview_model is None:
+            with timed("Loading preview model"):
+                model = memory_profile_call(
+                    "preview_model:AutoModelForCausalLM.from_pretrained",
+                    AutoModelForCausalLM.from_pretrained,
+                    self.model_id,
+                    cache_dir=CACHE_DIR,
+                    torch_dtype=dtype,
+                    trust_remote_code=True,
+                    low_cpu_mem_usage=True,
+                )
+                memory_checkpoint("preview_model:after from_pretrained")
+                with memory_scope("preview_model:to device"):
+                    model.to(device).eval()
+                for param in model.parameters():
+                    param.requires_grad_(False)
+                self._preview_model = model
+                self._empty_device_cache()
+                memory_checkpoint("preview_model:ready")
+        memory_checkpoint("preview_load:end")
+        assert self._preview_model is not None
+        return self._preview_model, tokenizer
 
     def _inputs_for_prompt(
         self,
@@ -1187,7 +1331,7 @@ class BiologyAttributionRunner:
         prompt: str,
         *,
         use_chat_template: bool = True,
-    ) -> tuple[Any, list[int], list[str]]:
+    ) -> tuple[torch.Tensor, list[int], list[str]]:
         if self._device is None:
             raise RuntimeError("runner device is not loaded")
         text = prompt
@@ -1198,14 +1342,12 @@ class BiologyAttributionRunner:
                 add_generation_prompt=True,
                 enable_thinking=False,
             )
-        inputs = tokenizer([text], return_tensors="pt").to(self._device)
+        input_ids = tokenizer([text], return_tensors="pt").input_ids.to(self._device)
 
-        input_token_ids = [
-            int(token_id) for token_id in inputs.input_ids[0].detach().cpu().tolist()
-        ]
+        input_token_ids = [int(token_id) for token_id in input_ids[0].detach().cpu().tolist()]
         prompt_tokens = tokenizer.batch_decode([[token_id] for token_id in input_token_ids])
         print(f"[INFO] prompt tokens ({len(prompt_tokens)}): {prompt_tokens}")
-        return inputs, input_token_ids, prompt_tokens
+        return input_ids, input_token_ids, prompt_tokens
 
     def _register_hooks(
         self,
@@ -1231,44 +1373,40 @@ class BiologyAttributionRunner:
         top_k: int | None = None,
         use_chat_template: bool = True,
     ) -> PreviewResult:
-        """Run a hooked forward pass and return the default next-token target."""
+        """Run a lightweight inference forward and return the default next-token target."""
 
         with self._lock:
-            model, tokenizer, transcoders = self._loaded()
+            memory_checkpoint("preview:start")
+            model, tokenizer = self._loaded_for_preview()
             resolved_slug = slug or slugify(prompt[:50])
-            inputs, input_token_ids, prompt_tokens = self._inputs_for_prompt(
-                tokenizer, prompt, use_chat_template=use_chat_template
-            )
-            state = HookState(
-                layers=self.layers,
-                transcoders=transcoders,
-                mlp_inputs={},
-                feature_values={},
-                layer_features={},
-                output_grads={},
-            )
-            handles = self._register_hooks(model, transcoders, state)
-            try:
-                with timed("Preview forward pass"):
-                    outputs = model(**inputs)
-                    last_logits = outputs.logits[0, -1]
-                    target_token_id, target_token_str, target_token_prob = select_target_token(
-                        tokenizer,
-                        last_logits,
-                    )
-                    top_tokens = top_token_candidates(
-                        tokenizer,
-                        last_logits,
-                        top_k=top_k if top_k is not None else self.preview_top_k,
-                    )
-                    print(
-                        f"[INFO] preview target token id={target_token_id} "
-                        f"({target_token_str!r}) p={target_token_prob:.4f}"
-                    )
-            finally:
-                for handle in handles:
-                    handle.remove()
+            with memory_scope("preview:tokenize"):
+                input_ids, input_token_ids, prompt_tokens = self._inputs_for_prompt(
+                    tokenizer, prompt, use_chat_template=use_chat_template
+                )
+            with timed("Preview inference forward pass"), torch.no_grad():
+                outputs = memory_profile_call(
+                    "preview:hf_model_forward",
+                    lambda: model(input_ids, use_cache=False),
+                )
+                logits = outputs.logits
+                memory_checkpoint("preview:after model_forward")
+                last_logits = logits[0, -1]
+                target_token_id, target_token_str, target_token_prob = select_target_token(
+                    tokenizer,
+                    last_logits,
+                )
+                top_tokens = top_token_candidates(
+                    tokenizer,
+                    last_logits,
+                    top_k=top_k if top_k is not None else self.preview_top_k,
+                )
+                print(
+                    f"[INFO] preview target token id={target_token_id} "
+                    f"({target_token_str!r}) p={target_token_prob:.4f}"
+                )
+                memory_checkpoint("preview:after top tokens")
 
+            memory_checkpoint("preview:end")
             return PreviewResult(
                 prompt=prompt,
                 slug=resolved_slug,
@@ -1303,102 +1441,97 @@ class BiologyAttributionRunner:
             resolved_slug = slug or slugify(prompt[:50])
             labels = load_feature_labels(set(self.layers))
             print(f"[INFO] loaded {len(labels)} feature labels")
-            inputs, input_token_ids, prompt_tokens = self._inputs_for_prompt(
+            input_ids, input_token_ids, prompt_tokens = self._inputs_for_prompt(
                 tokenizer, prompt, use_chat_template=use_chat_template
             )
 
-            state = HookState(
-                layers=self.layers,
-                transcoders=transcoders,
-                mlp_inputs={},
-                feature_values={},
-                layer_features={},
-                output_grads={},
+            from biology_server_t_lens.tl_attribution import (
+                TargetSpec,
+                run_attribution_from_context,
+                setup_attribution,
             )
-            handles = self._register_hooks(model, transcoders, state)
-            try:
-                with timed("Forward pass"):
-                    outputs = model(**inputs)
-                    last_logits = outputs.logits[0, -1]
-                    logit_targets = select_logit_targets(
-                        tokenizer,
-                        last_logits,
-                        pos=len(prompt_tokens) - 1,
-                        prob_threshold=logit_prob_threshold,
-                        max_logit_nodes=max_logit_nodes,
-                        target_token_id=target_token_id,
-                        target_token=target_token,
-                    )
-                    primary_target = logit_targets[0]
-                    target_logit = last_logits[primary_target.token_id]
-                    print(
-                        f"[INFO] primary logit id={primary_target.token_id} "
-                        f"({primary_target.token!r}) p={primary_target.prob:.4f} "
-                        f"logit={target_logit.item():.3f}; "
-                        f"logit nodes={len(logit_targets)}"
-                    )
 
-                active_features = finalize_active_features(state)
-                print(f"[INFO] active features={len(active_features)}")
+            batch_size = max(self.batch_size, max_logit_nodes)
+            with timed("TL replacement forward pass"):
+                ctx = setup_attribution(
+                    model,
+                    input_ids,
+                    batch_size=batch_size,
+                    transcoders=transcoders,
+                    layers=self.layers,
+                )
+                last_logits = ctx.logits[0, -1]
+                logit_targets = select_logit_targets(
+                    tokenizer,
+                    last_logits,
+                    pos=len(prompt_tokens) - 1,
+                    prob_threshold=logit_prob_threshold,
+                    max_logit_nodes=max_logit_nodes,
+                    target_token_id=target_token_id,
+                    target_token=target_token,
+                )
+                primary_target = logit_targets[0]
+                target_logit = last_logits[primary_target.token_id]
+                print(
+                    f"[INFO] primary logit id={primary_target.token_id} "
+                    f"({primary_target.token!r}) p={primary_target.prob:.4f} "
+                    f"logit={target_logit.item():.3f}; "
+                    f"logit nodes={len(logit_targets)}; "
+                    f"active features={ctx.n_features}"
+                )
+
+            logit_specs = [
+                TargetSpec(
+                    kind="logit",
+                    pos=len(prompt_tokens) - 1,
+                    token_id=target.token_id,
+                    prob=target.prob,
+                )
+                for target in logit_targets
+            ]
+            with timed("TL iterative top-K attribution"):
+                active_features, dense_edge_matrix = run_attribution_from_context(
+                    ctx,
+                    logit_targets=logit_specs,
+                    max_feature_nodes=self.max_feature_nodes,
+                    update_interval=self.update_interval,
+                )
+                logit_weights = logit_weights_from_dense_matrix(
+                    dense_edge_matrix=dense_edge_matrix,
+                    selected=active_features,
+                    logit_targets=logit_targets,
+                    n_pos=len(input_token_ids),
+                )
                 selected = selected_features_from_active(
                     active_features=active_features,
                     labels=labels,
+                    logit_weights=logit_weights,
+                )
+                all_links = dense_edge_matrix_links(
+                    selected=selected,
+                    input_token_ids=input_token_ids,
+                    logit_targets=logit_targets,
+                    dense_edge_matrix=dense_edge_matrix,
+                )
+                print(
+                    f"[INFO] selected feature rows={len(selected)} unpruned links={len(all_links)}"
                 )
 
-                with timed("Logit attribution rows"):
-                    output_embeddings = model.get_output_embeddings()
-                    if output_embeddings is None:
-                        raise RuntimeError(
-                            "model has no output embeddings; cannot attribute logits"
-                        )
-                    logit_rows: list[LogitAttributionRow] = []
-                    for target in logit_targets:
-                        logit_vector = demeaned_unembed_vector(
-                            output_embeddings.weight,
-                            target.token_id,
-                            state.final_hidden.dtype
-                            if state.final_hidden is not None
-                            else last_logits.dtype,
-                        )
-                        backward_from_final_hidden(state, logit_vector)
-                        logit_rows.append(
-                            LogitAttributionRow(
-                                target=target,
-                                feature_scores=collect_feature_scores(state, len(active_features)),
-                                embedding_scores=collect_embedding_scores(state),
-                            )
-                        )
-
-                with timed("Full circuit edge attribution"):
-                    all_links = build_full_attribution_links(
-                        selected=selected,
-                        state=state,
-                        active_count=len(active_features),
-                        logit_rows=logit_rows,
-                        input_token_ids=input_token_ids,
-                    )
-
-                with timed("Anthropic-style graph pruning"):
-                    selected, all_links = prune_graph_by_indirect_influence(
-                        selected=selected,
-                        input_token_ids=input_token_ids,
-                        links=all_links,
-                        logit_targets=logit_targets,
-                        node_threshold=node_threshold,
-                        edge_threshold=edge_threshold,
-                    )
-            finally:
-                for handle in handles:
-                    handle.remove()
+            with timed("Anthropic-style graph pruning"):
+                selected, all_links = prune_graph_by_indirect_influence(
+                    selected=selected,
+                    input_token_ids=input_token_ids,
+                    links=all_links,
+                    logit_targets=logit_targets,
+                    node_threshold=node_threshold,
+                    edge_threshold=edge_threshold,
+                )
 
             with timed("Per-feature direct-logit projection"), torch.no_grad():
-                output_embeddings = model.get_output_embeddings()
-                if output_embeddings is None:
-                    raise RuntimeError("model has no output embeddings; cannot project logits")
                 feature_logits = compute_feature_logits(
                     selected=selected,
                     transcoders=transcoders,
-                    unembed=output_embeddings.weight,
+                    unembed=model.W_U,
                     tokenizer=tokenizer,
                 )
 
