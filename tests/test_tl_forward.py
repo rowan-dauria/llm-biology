@@ -1,0 +1,149 @@
+"""Chunk 3 acceptance tests: transcoder substitution + caching on a toy model."""
+
+from __future__ import annotations
+
+import unittest
+
+import torch
+import torch.nn as nn
+from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTranscoder
+from transformer_lens import HookedTransformer, HookedTransformerConfig
+
+from biology_server_t_lens.tl_forward import HookState, install_transcoder_hooks
+from biology_server_t_lens.tl_freeze import install_freezes
+
+
+def _toy_model(seed: int = 0) -> HookedTransformer:
+    torch.manual_seed(seed)
+    cfg = HookedTransformerConfig(
+        n_layers=2,
+        d_model=8,
+        n_heads=2,
+        d_head=4,
+        n_ctx=4,
+        d_vocab=16,
+        act_fn="silu",
+        normalization_type="RMS",
+    )
+    return HookedTransformer(cfg).to("cpu")
+
+
+def _toy_transcoder(
+    d_model: int, d_transcoder: int, layer_idx: int, seed: int
+) -> SingleLayerTranscoder:
+    g = torch.Generator().manual_seed(seed)
+    tc = SingleLayerTranscoder(
+        d_model=d_model,
+        d_transcoder=d_transcoder,
+        activation_function=nn.ReLU(),
+        layer_idx=layer_idx,
+        skip_connection=False,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+    with torch.no_grad():
+        tc.W_enc.copy_(torch.randn(d_transcoder, d_model, generator=g) * 0.5)
+        tc.W_dec.copy_(torch.randn(d_transcoder, d_model, generator=g) * 0.5)
+        tc.b_enc.copy_(torch.randn(d_transcoder, generator=g) * 0.1)
+        tc.b_dec.zero_()
+    return tc
+
+
+class TestTLForward(unittest.TestCase):
+    def setUp(self):
+        self.model = _toy_model()
+        install_freezes(self.model)
+        self.d_transcoder = 16
+        self.transcoders = {
+            layer: _toy_transcoder(
+                d_model=self.model.cfg.d_model,
+                d_transcoder=self.d_transcoder,
+                layer_idx=layer,
+                seed=100 + layer,
+            )
+            for layer in range(self.model.cfg.n_layers)
+        }
+        self.state = HookState(
+            layers=list(range(self.model.cfg.n_layers)),
+            transcoders=self.transcoders,
+        )
+        torch.manual_seed(42)
+        self.tokens = torch.randint(0, self.model.cfg.d_vocab, (1, self.model.cfg.n_ctx))
+
+    def _forward(self, capture: dict | None = None):
+        fwd_hooks = install_transcoder_hooks(self.model, self.transcoders, self.state)
+
+        if capture is not None:
+            for layer in self.state.layers:
+
+                def probe(acts: torch.Tensor, hook, layer=layer) -> torch.Tensor:  # noqa: ARG001
+                    capture[layer] = acts.detach().clone()
+                    return acts
+
+                fwd_hooks.append((f"blocks.{layer}.hook_mlp_out", probe))
+
+        return self.model.run_with_hooks(self.tokens, fwd_hooks=fwd_hooks)
+
+    def test_layer_features_populated(self):
+        self._forward()
+        for layer in self.state.layers:
+            data = self.state.layer_features[layer]
+            self.assertGreater(
+                data.feature_ids.numel(),
+                0,
+                f"layer {layer}: no active features captured (random model should have some)",
+            )
+            self.assertEqual(
+                data.feature_ids.shape,
+                data.activations.shape,
+            )
+            self.assertEqual(
+                data.encoder_vectors.shape,
+                (data.feature_ids.numel(), self.model.cfg.d_model),
+            )
+            self.assertEqual(
+                data.decoder_vectors.shape,
+                (data.feature_ids.numel(), self.model.cfg.d_model),
+            )
+            # Activations must be positive (post-ReLU).
+            self.assertTrue(bool((data.activations > 0).all().item()))
+
+    def test_mlp_out_equals_reconstruction(self):
+        captured: dict[int, torch.Tensor] = {}
+        self._forward(capture=captured)
+        for layer in self.state.layers:
+            mlp_in = self.state.mlp_inputs[layer]
+            tc = self.transcoders[layer]
+            with torch.no_grad():
+                features = tc.encode(mlp_in)
+                expected = tc.decode(features.to(tc.W_dec.dtype), None).to(captured[layer].dtype)
+            self.assertTrue(
+                torch.allclose(captured[layer], expected, atol=1e-5, rtol=1e-5),
+                f"layer {layer}: mlp_out != transcoder reconstruction "
+                f"(max |Δ|={(captured[layer] - expected).abs().max().item():.3e})",
+            )
+
+    def test_backward_populates_grads(self):
+        self._forward()
+        final_hidden = self.state.final_hidden
+        assert final_hidden is not None
+        self.assertTrue(final_hidden.requires_grad)
+        final_hidden.backward(torch.ones_like(final_hidden))
+
+        for layer in self.state.layers:
+            grad = self.state.output_grads.get(layer)
+            assert grad is not None, f"layer {layer}: no output grad captured"
+            self.assertEqual(grad.shape, final_hidden.shape)
+            self.assertGreater(
+                grad.abs().max().item(),
+                0.0,
+                f"layer {layer}: backward produced all-zero grad at MLP-out",
+            )
+
+        embedding_grad = self.state.embedding_grad
+        assert embedding_grad is not None
+        self.assertGreater(embedding_grad.abs().max().item(), 0.0)
+
+
+if __name__ == "__main__":
+    unittest.main()
