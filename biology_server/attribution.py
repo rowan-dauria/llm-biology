@@ -11,18 +11,23 @@ import os
 import re
 import threading
 import time
+import types
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTranscoder
 from circuit_tracer.transcoder.single_layer_transcoder import (
     load_transcoder as load_relu_transcoder,
 )
 from huggingface_hub import snapshot_download
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
+from transformers.masking_utils import ALL_MASK_ATTENTION_FUNCTIONS, eager_mask
+from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+from transformers.models.qwen3.modeling_qwen3 import Qwen3RMSNorm, repeat_kv
 
 from circuit_graph_export import (
     FeatureNode,
@@ -147,18 +152,6 @@ class LogitAttributionRow:
 
 
 @dataclass(frozen=True, slots=True)
-class SourceGroup:
-    node_ids: list[str]
-    decoder_vectors: torch.Tensor
-
-
-@dataclass(frozen=True, slots=True)
-class TargetGroup:
-    node_ids: list[str]
-    encoder_vectors: torch.Tensor
-
-
-@dataclass(frozen=True, slots=True)
 class PreviewResult:
     prompt: str
     slug: str
@@ -237,6 +230,96 @@ def make_final_hidden_hook(state: HookState):
         return output
 
     return hook
+
+
+_FREEZE_FLAG_ATTR = "_attribution_freezes_installed"
+_DETACHED_EAGER_KEY = "detached_eager"
+
+
+def _detached_eager_attention_forward(
+    module,
+    query,
+    key,
+    value,
+    attention_mask,
+    scaling,
+    dropout=0.0,
+    **kwargs,
+):
+    """Eager attention with attention pattern detached.
+
+    Mirrors transformers.models.qwen3.modeling_qwen3.eager_attention_forward but
+    treats the softmaxed attention pattern as a constant. Gradients still flow
+    through value_states (and thus W_V, W_O), giving the linearised OV-only
+    attention Jacobian used by the attribution-graphs methodology.
+    """
+
+    del dropout  # never apply attention dropout during attribution
+    key_states = repeat_kv(key, module.num_key_value_groups)
+    value_states = repeat_kv(value, module.num_key_value_groups)
+
+    attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
+    if attention_mask is not None:
+        causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
+        attn_weights = attn_weights + causal_mask
+
+    attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
+    attn_weights = attn_weights.detach()
+    attn_output = torch.matmul(attn_weights, value_states)
+    attn_output = attn_output.transpose(1, 2).contiguous()
+    return attn_output, attn_weights
+
+
+def _patched_rms_norm_forward(self, hidden_states):
+    """RMSNorm forward with the 1/RMS scale detached.
+
+    Forward output is numerically identical to the upstream Qwen3RMSNorm, but
+    the rsqrt(variance + eps) factor is treated as an input-independent
+    constant so backward only sees a linear projection through self.weight.
+    """
+
+    input_dtype = hidden_states.dtype
+    hidden_states_f = hidden_states.to(torch.float32)
+    variance = hidden_states_f.pow(2).mean(-1, keepdim=True)
+    scale = torch.rsqrt(variance + self.variance_epsilon).detach()
+    hidden_states_f = hidden_states_f * scale
+    return self.weight * hidden_states_f.to(input_dtype)
+
+
+def install_freezes(model: Any) -> None:
+    """Linearise the model for attribution: freeze attention pattern + RMSNorm scale.
+
+    Replaces each Qwen3 attention layer's eager implementation with one that
+    detaches the softmaxed pattern, and rewrites every Qwen3RMSNorm.forward so
+    that its 1/RMS scale is also detached. Forward numerics are unchanged; only
+    backward gradient flow is altered so that the model is exactly linear in
+    the residual stream (as in the Anthropic local replacement model).
+    """
+
+    if getattr(model, _FREEZE_FLAG_ATTR, False):
+        return
+
+    # .register() writes to the class-level _global_mapping. transformers'
+    # _preprocess_mask_arguments checks _global_mapping directly to decide
+    # whether to skip mask construction, so an instance-level __setitem__
+    # (which only updates _local_mapping) would cause create_causal_mask to
+    # early-exit with None and break the forward pass numerics.
+    ALL_ATTENTION_FUNCTIONS.register(_DETACHED_EAGER_KEY, _detached_eager_attention_forward)
+    ALL_MASK_ATTENTION_FUNCTIONS.register(_DETACHED_EAGER_KEY, eager_mask)
+
+    config = getattr(model, "config", None)
+    if config is not None:
+        config._attn_implementation = _DETACHED_EAGER_KEY
+    for submodule in model.modules():
+        sub_config = getattr(submodule, "config", None)
+        if sub_config is not None and hasattr(sub_config, "_attn_implementation"):
+            sub_config._attn_implementation = _DETACHED_EAGER_KEY
+
+    for submodule in model.modules():
+        if isinstance(submodule, Qwen3RMSNorm):
+            submodule.forward = types.MethodType(_patched_rms_norm_forward, submodule)
+
+    setattr(model, _FREEZE_FLAG_ATTR, True)
 
 
 def make_mlp_hook(layer_idx: int, transcoder: SingleLayerTranscoder, state: HookState):
@@ -378,39 +461,28 @@ def backward_from_final_hidden(state: HookState, vector: torch.Tensor) -> None:
 
 
 def backward_from_feature(state: HookState, feature: SelectedFeature) -> None:
-    """Seed direct standard-transcoder attributions for one downstream feature.
+    """Backprop a downstream feature's encoder vector through the frozen model.
 
-    For an upstream feature ``(l, i, t)`` and downstream feature ``(l', i', t')``,
-    the standard-transcoder attribution is nonzero only when ``t == t'`` and is
-    ``z_TC(l, i, t) * dot(f_dec(l, i), f_enc(l', i'))``.  This function therefore
-    builds the residual-stream gradient that ``collect_feature_scores`` should
-    contract with activation-scaled upstream decoder vectors, without tracing
-    through intervening model layers.
+    With install_freezes applied, attention patterns, RMSNorm scales, and the
+    non-linear part of every MLP write are detached. The model is therefore
+    exactly linear in the residual stream, so injecting ``f_enc`` at
+    ``(feature.layer, feature.pos)`` and calling ``mlp_input.backward(...)``
+    produces residual-stream gradients whose dot product with upstream decoder
+    vectors equals the direct effect described in Anthropic's Methods paper
+    (eqns 7 and 8): same-token transcoder→transcoder edges plus cross-token
+    edges mediated by frozen attention OV circuits.
     """
+
     if feature.encoder_vector is None:
         raise RuntimeError("Selected feature is missing its encoder vector")
     state.clear_grads()
 
     mlp_input = state.mlp_inputs[feature.layer]
     gradient = torch.zeros_like(mlp_input)
-
-    # The downstream encoder vector is the input-invariant read vector in the
-    # paper's formula.  Putting it only at feature.pos makes cross-token source
-    # scores exactly zero when collect_feature_scores indexes upstream positions.
     gradient[0, feature.pos] = feature.encoder_vector.to(
         device=gradient.device, dtype=gradient.dtype
     )
-
-    # Earlier transcoder outputs all write into the same residual stream, so the
-    # direct residual connection gives each causal source layer the same row
-    # vector.  Avoiding .backward() here keeps attention/MLP Jacobians out of the
-    # feature-pair attribution.
-    source_layers = [layer for layer in state.layers if layer < feature.layer]
-    for layer in source_layers:
-        state.output_grads[layer] = gradient
-
-    # Token embeddings are scored with the same direct residual row.
-    state.embedding_grad = gradient
+    mlp_input.backward(gradient=gradient, retain_graph=True)
 
 
 def load_transcoders(
@@ -612,176 +684,22 @@ def row_links(
     ]
 
 
-def build_source_groups(
-    *,
-    selected: list[SelectedFeature],
-    state: HookState,
-) -> dict[tuple[int, int], SourceGroup]:
-    entries: defaultdict[tuple[int, int], list[tuple[str, int]]] = defaultdict(list)
-    for feature in selected:
-        if feature.score_index is None:
-            continue
-        data = state.layer_features[feature.layer]
-        entries[(feature.layer, feature.pos)].append(
-            (feature.node_id, feature.score_index - data.start)
-        )
-
-    groups: dict[tuple[int, int], SourceGroup] = {}
-    for (layer, pos), group_entries in entries.items():
-        data = state.layer_features[layer]
-        local_indices = torch.tensor(
-            [local_idx for _, local_idx in group_entries],
-            dtype=torch.long,
-            device=data.decoder_vectors.device,
-        )
-        groups[(layer, pos)] = SourceGroup(
-            node_ids=[node_id for node_id, _ in group_entries],
-            decoder_vectors=data.decoder_vectors.index_select(0, local_indices),
-        )
-    return groups
-
-
-def build_target_groups(
-    *,
-    selected: list[SelectedFeature],
-) -> dict[tuple[int, int], TargetGroup]:
-    entries: defaultdict[tuple[int, int], list[SelectedFeature]] = defaultdict(list)
-    for feature in selected:
-        if feature.encoder_vector is None:
-            raise RuntimeError("Selected feature is missing its encoder vector")
-        entries[(feature.layer, feature.pos)].append(feature)
-
-    groups: dict[tuple[int, int], TargetGroup] = {}
-    for key, features in entries.items():
-        groups[key] = TargetGroup(
-            node_ids=[feature.node_id for feature in features],
-            encoder_vectors=torch.stack([feature.encoder_vector for feature in features]),
-        )
-    return groups
-
-
-def direct_feature_row_links(
-    *,
-    downstream: SelectedFeature,
-    source_groups: dict[tuple[int, int], SourceGroup],
-    state: HookState,
-    input_token_ids: list[int],
-) -> list[GraphLink]:
-    if downstream.encoder_vector is None:
-        raise RuntimeError("Selected feature is missing its encoder vector")
-
-    links: list[GraphLink] = []
-    for layer in state.layers:
-        if layer >= downstream.layer:
-            continue
-        group = source_groups.get((layer, downstream.pos))
-        if group is None:
-            continue
-        encoder = downstream.encoder_vector.to(
-            device=group.decoder_vectors.device,
-            dtype=group.decoder_vectors.dtype,
-        )
-        weights = group.decoder_vectors @ encoder
-        for source_id, weight in zip(
-            group.node_ids,
-            weights.detach().cpu().tolist(),
-            strict=True,
-        ):
-            weight = float(weight)
-            if weight:
-                links.append(GraphLink(source=source_id, target=downstream.node_id, weight=weight))
-
-    if state.token_vectors is None:
-        raise RuntimeError("Token embeddings were not captured")
-    if 0 <= downstream.pos < len(input_token_ids):
-        token_vector = state.token_vectors[downstream.pos]
-        encoder = downstream.encoder_vector.to(
-            device=token_vector.device,
-            dtype=token_vector.dtype,
-        )
-        weight = float((token_vector * encoder).sum().detach().cpu().item())
-        if weight:
-            links.append(
-                GraphLink(
-                    source=embedding_node_id(input_token_ids[downstream.pos], downstream.pos),
-                    target=downstream.node_id,
-                    weight=weight,
-                )
-            )
-    return links
-
-
-def direct_feature_group_links(
-    *,
-    target_layer: int,
-    target_pos: int,
-    target_group: TargetGroup,
-    source_groups: dict[tuple[int, int], SourceGroup],
-    state: HookState,
-    input_token_ids: list[int],
-) -> list[GraphLink]:
-    links: list[GraphLink] = []
-    for source_layer in state.layers:
-        if source_layer >= target_layer:
-            continue
-        source_group = source_groups.get((source_layer, target_pos))
-        if source_group is None:
-            continue
-
-        encoders = target_group.encoder_vectors.to(
-            device=source_group.decoder_vectors.device,
-            dtype=source_group.decoder_vectors.dtype,
-        )
-        weights = source_group.decoder_vectors @ encoders.T
-        rows, cols = torch.nonzero(weights, as_tuple=True)
-        if rows.numel() == 0:
-            continue
-        values = weights[rows, cols].detach().cpu().tolist()
-        row_list = rows.detach().cpu().tolist()
-        col_list = cols.detach().cpu().tolist()
-        for row_idx, col_idx, weight in zip(row_list, col_list, values, strict=True):
-            links.append(
-                GraphLink(
-                    source=source_group.node_ids[int(row_idx)],
-                    target=target_group.node_ids[int(col_idx)],
-                    weight=float(weight),
-                )
-            )
-
-    if state.token_vectors is None:
-        raise RuntimeError("Token embeddings were not captured")
-    if 0 <= target_pos < len(input_token_ids):
-        token_vector = state.token_vectors[target_pos]
-        encoders = target_group.encoder_vectors.to(
-            device=token_vector.device,
-            dtype=token_vector.dtype,
-        )
-        weights = encoders @ token_vector
-        for target_id, weight in zip(
-            target_group.node_ids,
-            weights.detach().cpu().tolist(),
-            strict=True,
-        ):
-            weight = float(weight)
-            if weight:
-                links.append(
-                    GraphLink(
-                        source=embedding_node_id(input_token_ids[target_pos], target_pos),
-                        target=target_id,
-                        weight=weight,
-                    )
-                )
-    return links
-
-
 def build_full_attribution_links(
     *,
     selected: list[SelectedFeature],
     state: HookState,
+    active_count: int,
     logit_rows: list[LogitAttributionRow],
     input_token_ids: list[int],
 ) -> list[GraphLink]:
-    """Build unpruned attribution rows for every active feature and logit."""
+    """Build unpruned attribution rows for every selected feature and logit.
+
+    Logit rows reuse the gradients captured during backward_from_final_hidden.
+    For each selected feature we run a fresh backward_from_feature pass through
+    the frozen model so that the residual-stream gradients pick up both the
+    same-token transcoder→transcoder direct path (eqn 7) and cross-token
+    contributions mediated by the frozen attention OV circuits (eqn 8).
+    """
 
     links: list[GraphLink] = []
     for row in logit_rows:
@@ -796,23 +714,26 @@ def build_full_attribution_links(
             )
         )
 
-    source_groups = build_source_groups(selected=selected, state=state)
-    target_groups = build_target_groups(selected=selected)
-    processed_rows = 0
-    for target_layer, target_pos in sorted(target_groups):
-        target_group = target_groups[(target_layer, target_pos)]
+    for index, downstream in enumerate(selected, start=1):
+        if index == 1 or index % 25 == 0 or index == len(selected):
+            print(f"[INFO] full circuit rows {index}/{len(selected)}")
+
+        backward_from_feature(state, downstream)
+
+        source_layers = [layer for layer in state.layers if layer < downstream.layer]
+        feature_scores = collect_feature_scores(state, active_count, layers=source_layers)
+        embedding_scores = collect_embedding_scores(state)
+
         links.extend(
-            direct_feature_group_links(
-                target_layer=target_layer,
-                target_pos=target_pos,
-                target_group=target_group,
-                source_groups=source_groups,
-                state=state,
+            row_links(
+                target_id=downstream.node_id,
+                feature_scores=feature_scores,
+                embedding_scores=embedding_scores,
+                selected=selected,
                 input_token_ids=input_token_ids,
+                edge_top_k=0,
             )
         )
-        processed_rows += len(target_group.node_ids)
-        print(f"[INFO] full circuit rows {processed_rows}/{len(selected)}")
     return links
 
 
@@ -1241,6 +1162,7 @@ class BiologyAttributionRunner:
             model.to(device).eval()
             for param in model.parameters():
                 param.requires_grad_(False)
+            install_freezes(model)
 
         actual_layers = len(model.model.layers)
         if actual_layers != NUM_LAYERS:
@@ -1451,6 +1373,7 @@ class BiologyAttributionRunner:
                     all_links = build_full_attribution_links(
                         selected=selected,
                         state=state,
+                        active_count=len(active_features),
                         logit_rows=logit_rows,
                         input_token_ids=input_token_ids,
                     )

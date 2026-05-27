@@ -21,12 +21,9 @@ from biology_server.attribution import (
     PreviewResult,
     SelectedFeature,
     TokenCandidate,
-    backward_from_feature,
-    build_source_groups,
-    build_target_groups,
+    _detached_eager_attention_forward,
+    _patched_rms_norm_forward,
     collect_feature_scores,
-    direct_feature_group_links,
-    direct_feature_row_links,
     indirect_logit_influence,
     make_mlp_hook,
     prune_edges_by_thresholded_influence,
@@ -222,161 +219,76 @@ class BiologyServerTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "layer 12"):
             collect_feature_scores(state, 2)
 
-    def test_backward_from_feature_uses_direct_same_token_transcoder_formula(self) -> None:
-        state = HookState(
-            layers=[0, 2, 4],
-            transcoders={},
-            mlp_inputs={4: torch.zeros(1, 3, 2)},
-            feature_values={},
-            layer_features={
-                0: LayerFeatureData(
-                    positions=torch.tensor([1, 0]),
-                    feature_ids=torch.tensor([10, 11]),
-                    activations=torch.tensor([1.0, 1.0]),
-                    encoder_vectors=torch.zeros(2, 2),
-                    decoder_vectors=torch.tensor([[2.0, 4.0], [10.0, 20.0]]),
-                    start=0,
-                ),
-                2: LayerFeatureData(
-                    positions=torch.tensor([1]),
-                    feature_ids=torch.tensor([12]),
-                    activations=torch.tensor([1.0]),
-                    encoder_vectors=torch.zeros(1, 2),
-                    decoder_vectors=torch.tensor([[-1.0, 3.0]]),
-                    start=2,
-                ),
-            },
-            output_grads={},
-        )
-        downstream = SelectedFeature(
-            layer=4,
-            pos=1,
-            feature=99,
-            activation=1.0,
-            logit_weight=0.0,
-            clerp="target",
-            encoder_vector=torch.tensor([5.0, 7.0]),
-        )
+    def test_detached_eager_attention_blocks_query_and_key_gradients(self) -> None:
+        class _Module:
+            num_key_value_groups = 1
 
-        backward_from_feature(state, downstream)
-        scores = collect_feature_scores(state, 3, layers=[0, 2])
+        torch.manual_seed(0)
+        batch, heads, seq, head_dim = 1, 2, 3, 4
+        query = torch.randn(batch, heads, seq, head_dim, requires_grad=True)
+        key = torch.randn(batch, heads, seq, head_dim, requires_grad=True)
+        value = torch.randn(batch, heads, seq, head_dim, requires_grad=True)
 
-        self.assertEqual(scores.tolist(), [38.0, 0.0, 16.0])
+        attn_output, _ = _detached_eager_attention_forward(
+            _Module(), query, key, value, attention_mask=None, scaling=head_dim**-0.5
+        )
+        attn_output.sum().backward()
 
-    def test_direct_feature_row_links_only_scan_same_token_upstream_sources(self) -> None:
-        state = HookState(
-            layers=[0, 2, 4],
-            transcoders={},
-            mlp_inputs={},
-            feature_values={},
-            layer_features={
-                0: LayerFeatureData(
-                    positions=torch.tensor([1, 0]),
-                    feature_ids=torch.tensor([10, 11]),
-                    activations=torch.tensor([1.0, 1.0]),
-                    encoder_vectors=torch.zeros(2, 2),
-                    decoder_vectors=torch.tensor([[2.0, 4.0], [10.0, 20.0]]),
-                    start=0,
-                ),
-                2: LayerFeatureData(
-                    positions=torch.tensor([1]),
-                    feature_ids=torch.tensor([12]),
-                    activations=torch.tensor([1.0]),
-                    encoder_vectors=torch.zeros(1, 2),
-                    decoder_vectors=torch.tensor([[-1.0, 3.0]]),
-                    start=2,
-                ),
-            },
-            output_grads={},
-            token_vectors=torch.tensor([[0.0, 0.0], [7.0, 11.0], [0.0, 0.0]]),
-        )
-        selected = [
-            SelectedFeature(0, 1, 10, 1.0, 0.0, "a", score_index=0),
-            SelectedFeature(0, 0, 11, 1.0, 0.0, "b", score_index=1),
-            SelectedFeature(2, 1, 12, 1.0, 0.0, "c", score_index=2),
-        ]
-        downstream = SelectedFeature(
-            layer=4,
-            pos=1,
-            feature=99,
-            activation=1.0,
-            logit_weight=0.0,
-            clerp="target",
-            encoder_vector=torch.tensor([5.0, 7.0]),
-        )
+        self.assertIsNone(query.grad)
+        self.assertIsNone(key.grad)
+        self.assertIsNotNone(value.grad)
 
-        links = direct_feature_row_links(
-            downstream=downstream,
-            source_groups=build_source_groups(selected=selected, state=state),
-            state=state,
-            input_token_ids=[101, 102, 103],
-        )
+    def test_detached_eager_attention_forward_matches_eager_values(self) -> None:
+        from transformers.models.qwen3.modeling_qwen3 import eager_attention_forward
 
-        self.assertEqual(
-            [(link.source, link.target, link.weight) for link in links],
-            [
-                ("0_10_1", "4_99_1", 38.0),
-                ("2_12_1", "4_99_1", 16.0),
-                ("E_102_1", "4_99_1", 112.0),
-            ],
-        )
+        class _Module:
+            num_key_value_groups = 1
+            training = False
 
-    def test_direct_feature_group_links_matches_row_formula_for_target_blocks(self) -> None:
-        state = HookState(
-            layers=[0, 2, 4],
-            transcoders={},
-            mlp_inputs={},
-            feature_values={},
-            layer_features={
-                0: LayerFeatureData(
-                    positions=torch.tensor([1]),
-                    feature_ids=torch.tensor([10]),
-                    activations=torch.tensor([1.0]),
-                    encoder_vectors=torch.zeros(1, 2),
-                    decoder_vectors=torch.tensor([[2.0, 4.0]]),
-                    start=0,
-                ),
-                2: LayerFeatureData(
-                    positions=torch.tensor([1]),
-                    feature_ids=torch.tensor([12]),
-                    activations=torch.tensor([1.0]),
-                    encoder_vectors=torch.zeros(1, 2),
-                    decoder_vectors=torch.tensor([[-1.0, 3.0]]),
-                    start=1,
-                ),
-            },
-            output_grads={},
-            token_vectors=torch.tensor([[0.0, 0.0], [7.0, 11.0]]),
-        )
-        sources = [
-            SelectedFeature(0, 1, 10, 1.0, 0.0, "a", score_index=0),
-            SelectedFeature(2, 1, 12, 1.0, 0.0, "b", score_index=1),
-        ]
-        targets = [
-            SelectedFeature(4, 1, 99, 1.0, 0.0, "x", encoder_vector=torch.tensor([5.0, 7.0])),
-            SelectedFeature(4, 1, 100, 1.0, 0.0, "y", encoder_vector=torch.tensor([1.0, 2.0])),
-        ]
+        torch.manual_seed(1)
+        batch, heads, seq, head_dim = 1, 2, 4, 3
+        query = torch.randn(batch, heads, seq, head_dim)
+        key = torch.randn(batch, heads, seq, head_dim)
+        value = torch.randn(batch, heads, seq, head_dim)
 
-        links = direct_feature_group_links(
-            target_layer=4,
-            target_pos=1,
-            target_group=next(iter(build_target_groups(selected=targets).values())),
-            source_groups=build_source_groups(selected=sources, state=state),
-            state=state,
-            input_token_ids=[101, 102],
+        attn_output, _ = _detached_eager_attention_forward(
+            _Module(), query, key, value, attention_mask=None, scaling=head_dim**-0.5
         )
+        expected, _ = eager_attention_forward(
+            _Module(), query, key, value, attention_mask=None, scaling=head_dim**-0.5
+        )
+        torch.testing.assert_close(attn_output, expected)
 
-        self.assertEqual(
-            [(link.source, link.target, link.weight) for link in links],
-            [
-                ("0_10_1", "4_99_1", 38.0),
-                ("0_10_1", "4_100_1", 10.0),
-                ("2_12_1", "4_99_1", 16.0),
-                ("2_12_1", "4_100_1", 5.0),
-                ("E_102_1", "4_99_1", 112.0),
-                ("E_102_1", "4_100_1", 29.0),
-            ],
-        )
+    def test_patched_rms_norm_forward_matches_unfrozen(self) -> None:
+        from transformers.models.qwen3.modeling_qwen3 import Qwen3RMSNorm
+
+        torch.manual_seed(2)
+        rms = Qwen3RMSNorm(hidden_size=8, eps=1e-5)
+        rms.weight.data.copy_(torch.randn(8))
+        x = torch.randn(2, 3, 8)
+
+        expected = rms.forward(x)
+        actual = _patched_rms_norm_forward(rms, x)
+        torch.testing.assert_close(actual, expected)
+
+    def test_patched_rms_norm_gradient_treats_scale_as_constant(self) -> None:
+        from transformers.models.qwen3.modeling_qwen3 import Qwen3RMSNorm
+
+        torch.manual_seed(3)
+        rms = Qwen3RMSNorm(hidden_size=4, eps=1e-5)
+        rms.weight.data.copy_(torch.tensor([1.0, 2.0, 3.0, 4.0]))
+        x = torch.randn(1, 2, 4, requires_grad=True)
+        grad_out = torch.randn(1, 2, 4)
+
+        out = _patched_rms_norm_forward(rms, x)
+        out.backward(gradient=grad_out)
+
+        with torch.no_grad():
+            x_f = x.detach().to(torch.float32)
+            scale = torch.rsqrt(x_f.pow(2).mean(-1, keepdim=True) + rms.variance_epsilon)
+            expected_grad = (grad_out * rms.weight * scale.to(grad_out.dtype)).to(x.dtype)
+
+        torch.testing.assert_close(x.grad, expected_grad)
 
     def test_row_links_keeps_top_feature_and_embedding_sources(self) -> None:
         selected = [
