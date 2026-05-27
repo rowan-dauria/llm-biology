@@ -15,7 +15,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
-#SBATCH --time=00:20:00
+#SBATCH --time=00:05:00
 #SBATCH --mail-type=NONE
 #SBATCH -o /home/rd761/mphil-project/llm-biology/slurm_logs/label_from_graph-%j.out
 #SBATCH -e /home/rd761/mphil-project/llm-biology/slurm_logs/label_from_graph-%j.err
