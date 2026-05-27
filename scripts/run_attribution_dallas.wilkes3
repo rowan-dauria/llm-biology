@@ -72,7 +72,7 @@ export OMP_NUM_THREADS=1
 application="srun"
 
 #! Run options for the application:
-options='python -u scripts/generate_attribution_graph.py --prompt "Fact: the capital of the state containing Dallas is" --slug dallas-state-capital'
+options='python -u scripts/generate_attribution_graph.py --prompt "Fact: the capital of the state containing Dallas is" --slug dallas-state-capital --no-chat-template'
 
 #! Number of MPI tasks to be started by the application per node and in total (do not change):
 np=$[${numnodes}*${mpi_tasks_per_node}]

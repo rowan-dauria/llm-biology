@@ -14,6 +14,7 @@ from pathlib import Path
 import torch
 from transformer_lens import HookedTransformer
 
+from biology_server_t_lens.memory_profile import memory_checkpoint, memory_profile_call
 from biology_server_t_lens.tl_freeze import install_freezes
 
 
@@ -43,7 +44,16 @@ def load_replacement_model(
         # set HF_HOME externally if needed. Kept here for signature symmetry.
         pass
 
-    model = HookedTransformer.from_pretrained(model_id, **kwargs)
+    memory_checkpoint("tl_model:before HookedTransformer.from_pretrained")
+    model = memory_profile_call(
+        "tl_model:HookedTransformer.from_pretrained",
+        HookedTransformer.from_pretrained,
+        model_id,
+        **kwargs,
+    )
+    memory_checkpoint("tl_model:after HookedTransformer.from_pretrained")
     install_freezes(model)
+    memory_checkpoint("tl_model:after install_freezes")
     model.eval()
+    memory_checkpoint("tl_model:after eval")
     return model

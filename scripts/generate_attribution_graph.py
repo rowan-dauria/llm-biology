@@ -45,6 +45,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-logit-nodes", type=int, default=DEFAULT_MAX_LOGIT_NODES)
     parser.add_argument("--graph-file-dir", type=Path, default=DEFAULT_GRAPH_DIR)
     parser.add_argument(
+        "--no-chat-template",
+        action="store_true",
+        help="Tokenize the prompt directly instead of applying Qwen's chat template.",
+    )
+    parser.add_argument(
         "--save-pt",
         nargs="?",
         const="auto",
@@ -72,6 +77,7 @@ def main() -> None:
         logit_prob_threshold=args.logit_prob_threshold,
         max_logit_nodes=args.max_logit_nodes,
         save_pt=args.save_pt,
+        use_chat_template=not args.no_chat_template,
     )
 
 

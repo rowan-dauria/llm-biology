@@ -27,6 +27,7 @@ from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTransco
 from transformer_lens import HookedTransformer
 
 from biology_server_t_lens.tl_forward import (
+    ActiveFeature,
     HookState,
     finalize_active_features,
     install_transcoder_hooks,
@@ -40,7 +41,10 @@ __all__ = [
     "build_dense_edge_matrix_serial",
     "collect_embedding_scores",
     "collect_feature_scores",
+    "compute_partial_influences",
     "demeaned_unembed_vector",
+    "run_attribution",
+    "run_attribution_from_context",
     "setup_attribution",
     "total_active_features",
 ]
@@ -191,6 +195,7 @@ class TargetSpec:
     layer: int | None = None
     token_id: int | None = None
     encoder_vector: torch.Tensor | None = None
+    prob: float = 1.0
 
 
 def build_dense_edge_matrix_serial(
@@ -252,12 +257,14 @@ class AttributionContext:
         model: HookedTransformer,
         state: HookState,
         batch_size: int,
+        logits: torch.Tensor,
     ) -> None:
         if state.final_hidden is None:
             raise RuntimeError("setup_attribution must be called before compute_batch")
         self.model = model
         self.state = state
         self.batch_size = batch_size
+        self.logits = logits
         self.n_features = total_active_features(state)
         self.n_pos = state.token_vectors.shape[0] if state.token_vectors is not None else 0
 
@@ -382,6 +389,295 @@ def setup_attribution(
     # We use model.hooks(...) as a context — but we need the graph to live past
     # the context exit. Use run_with_hooks (which removes hooks after forward
     # but keeps the autograd graph alive on the cached tensors).
-    model.run_with_hooks(expanded, fwd_hooks=fwd_hooks)
+    logits = model.run_with_hooks(expanded, fwd_hooks=fwd_hooks)
     finalize_active_features(state)
-    return AttributionContext(model, state, batch_size)
+    return AttributionContext(model, state, batch_size, logits)
+
+
+# ---------------------------------------------------------------------------
+# Chunk 7: partial-graph top-K feature selection.
+# ---------------------------------------------------------------------------
+
+
+def compute_partial_influences(
+    edge_matrix: torch.Tensor,
+    logit_probabilities: torch.Tensor,
+    row_to_node_index: torch.Tensor,
+    *,
+    max_iter: int = 128,
+) -> torch.Tensor:
+    """Estimate source-node influence from a partially filled adjacency matrix.
+
+    ``edge_matrix`` is oriented as ``A[target_row, source_col]``. Only rows
+    listed in ``row_to_node_index`` are currently known; each entry maps that
+    row to the corresponding node index in the column space. Starting from the
+    logit nodes, this walks known rows backwards through absolute, row-normalised
+    edge weights and accumulates one influence score per source node.
+    """
+    if edge_matrix.dim() != 2:
+        raise ValueError("edge_matrix must be rank-2")
+    if row_to_node_index.numel() != edge_matrix.shape[0]:
+        raise ValueError("row_to_node_index must have one entry per matrix row")
+    if logit_probabilities.numel() > edge_matrix.shape[1]:
+        raise ValueError("too many logit probabilities for edge_matrix columns")
+
+    matrix = edge_matrix.detach().abs().to(dtype=torch.float32)
+    matrix = matrix / matrix.sum(dim=1, keepdim=True).clamp(min=1e-8)
+    row_to_node_index = row_to_node_index.to(device=matrix.device, dtype=torch.long)
+    logit_probabilities = logit_probabilities.to(device=matrix.device, dtype=matrix.dtype)
+
+    influences = torch.zeros(matrix.shape[1], device=matrix.device, dtype=matrix.dtype)
+    prod = torch.zeros_like(influences)
+    prod[-logit_probabilities.numel() :] = logit_probabilities
+
+    for _ in range(max_iter):
+        prod = prod.index_select(0, row_to_node_index) @ matrix
+        if not bool(prod.any().item()):
+            break
+        influences += prod
+    else:
+        raise RuntimeError("partial influence computation failed to converge")
+
+    return influences
+
+
+def _active_features_from_state(state: HookState) -> list[ActiveFeature]:
+    active: list[ActiveFeature] = []
+    for layer in state.layers:
+        data = state.layer_features[layer]
+        for local_idx in range(data.feature_ids.numel()):
+            active.append(
+                ActiveFeature(
+                    layer=layer,
+                    pos=int(data.positions[local_idx].item()),
+                    feature=int(data.feature_ids[local_idx].item()),
+                    activation=float(data.activations[local_idx].item()),
+                    encoder_vector=data.encoder_vectors[local_idx],
+                    score_index=data.start + local_idx,
+                )
+            )
+    return active
+
+
+def _as_logit_target_specs(
+    logit_targets: Sequence[TargetSpec | object],
+    *,
+    default_pos: int,
+) -> list[TargetSpec]:
+    specs: list[TargetSpec] = []
+    for target in logit_targets:
+        if isinstance(target, TargetSpec):
+            if target.kind != "logit":
+                raise ValueError("logit_targets must contain only logit targets")
+            if target.token_id is None:
+                raise ValueError("logit TargetSpec requires token_id")
+            specs.append(
+                TargetSpec(
+                    kind="logit",
+                    pos=target.pos,
+                    token_id=target.token_id,
+                    prob=target.prob,
+                )
+            )
+            continue
+
+        token_id = getattr(target, "token_id", None)
+        if token_id is None:
+            raise TypeError("logit target objects must expose token_id")
+        specs.append(
+            TargetSpec(
+                kind="logit",
+                pos=int(getattr(target, "pos", default_pos)),
+                token_id=int(token_id),
+                prob=float(getattr(target, "prob", 1.0)),
+            )
+        )
+    return specs
+
+
+def _feature_target_from_active(feature: ActiveFeature) -> TargetSpec:
+    return TargetSpec(
+        kind="feature",
+        layer=feature.layer,
+        pos=feature.pos,
+        encoder_vector=feature.encoder_vector,
+    )
+
+
+def _pack_selected_edge_matrix(
+    *,
+    edge_matrix: torch.Tensor,
+    selected_indices: list[int],
+    n_features: int,
+    n_pos: int,
+    n_logits: int,
+) -> torch.Tensor:
+    """Pack the temporary all-feature columns into a square selected graph.
+
+    Final node order is ``selected features``, then token embeddings, then
+    logits. Matrix orientation remains ``A[target, source]``.
+    """
+    n_selected = len(selected_indices)
+    n_nodes = n_selected + n_pos + n_logits
+    packed = torch.zeros(n_nodes, n_nodes, dtype=edge_matrix.dtype)
+    if n_nodes == 0:
+        return packed
+
+    selected = torch.tensor(selected_indices, dtype=torch.long)
+
+    # Feature target rows were appended after the logit rows in the same order
+    # as ``selected_indices``.
+    for target_row in range(n_selected):
+        source_row = n_logits + target_row
+        if n_selected:
+            packed[target_row, :n_selected] = edge_matrix[source_row].index_select(0, selected)
+        packed[target_row, n_selected : n_selected + n_pos] = edge_matrix[
+            source_row, n_features : n_features + n_pos
+        ]
+
+    # Logit target rows occupy the tail of the packed matrix.
+    for logit_idx in range(n_logits):
+        target_row = n_selected + n_pos + logit_idx
+        if n_selected:
+            packed[target_row, :n_selected] = edge_matrix[logit_idx].index_select(0, selected)
+        packed[target_row, n_selected : n_selected + n_pos] = edge_matrix[
+            logit_idx, n_features : n_features + n_pos
+        ]
+
+    return packed
+
+
+def run_attribution_from_context(
+    ctx: AttributionContext,
+    *,
+    logit_targets: Sequence[TargetSpec | object],
+    max_feature_nodes: int,
+    update_interval: int = 1,
+) -> tuple[list[ActiveFeature], torch.Tensor]:
+    """Run logit rows plus iterative top-K feature rows from a prepared context.
+
+    Returns ``(selected_active_features, dense_edge_matrix)``. The dense matrix
+    is square with node order ``selected features``, embeddings, logits and
+    orientation ``matrix[target, source]``.
+    """
+    if max_feature_nodes < 0:
+        raise ValueError("max_feature_nodes must be non-negative")
+    if update_interval <= 0:
+        raise ValueError("update_interval must be positive")
+
+    n_features = ctx.n_features
+    n_pos = ctx.n_pos
+    cap = min(max_feature_nodes, n_features)
+    default_pos = n_pos - 1
+    logit_specs = _as_logit_target_specs(logit_targets, default_pos=default_pos)
+    if not logit_specs:
+        raise ValueError("at least one logit target is required")
+    if len(logit_specs) > ctx.batch_size:
+        raise ValueError(f"{len(logit_specs)} logit targets exceed batch_size={ctx.batch_size}")
+
+    n_logits = len(logit_specs)
+    n_cols = n_features + n_pos + n_logits
+    edge_matrix = torch.zeros(n_logits + cap, n_cols, dtype=torch.float32)
+    row_to_node_index = torch.empty(n_logits + cap, dtype=torch.long)
+
+    logit_feature, logit_embedding = ctx.compute_batch(
+        logit_specs,
+        retain_graph=cap > 0,
+    )
+    edge_matrix[:n_logits, :n_features] = logit_feature.detach().cpu().float()
+    edge_matrix[:n_logits, n_features : n_features + n_pos] = logit_embedding.detach().cpu().float()
+    row_to_node_index[:n_logits] = torch.arange(n_logits) + n_features + n_pos
+
+    active_features = _active_features_from_state(ctx.state)
+    visited = torch.zeros(n_features, dtype=torch.bool)
+    selected_indices: list[int] = []
+    next_row = n_logits
+    logit_probs = torch.tensor([target.prob for target in logit_specs], dtype=torch.float32)
+
+    while len(selected_indices) < cap:
+        remaining = cap - len(selected_indices)
+        if cap == n_features:
+            pending = torch.arange(n_features)[~visited]
+        else:
+            influences = compute_partial_influences(
+                edge_matrix[:next_row],
+                logit_probs,
+                row_to_node_index[:next_row],
+            )
+            feature_rank = torch.argsort(influences[:n_features], descending=True)
+            queue_size = min(update_interval * ctx.batch_size, remaining)
+            pending = feature_rank[~visited[feature_rank]][:queue_size]
+
+        if pending.numel() == 0:
+            break
+
+        for start in range(0, pending.numel(), ctx.batch_size):
+            batch_indices = pending[start : start + ctx.batch_size].tolist()
+            targets = [
+                _feature_target_from_active(active_features[int(idx)]) for idx in batch_indices
+            ]
+            will_finish = len(selected_indices) + len(batch_indices) >= cap
+            feature_rows, embedding_rows = ctx.compute_batch(targets, retain_graph=not will_finish)
+            rows = len(batch_indices)
+            edge_matrix[next_row : next_row + rows, :n_features] = (
+                feature_rows.detach().cpu().float()
+            )
+            edge_matrix[next_row : next_row + rows, n_features : n_features + n_pos] = (
+                embedding_rows.detach().cpu().float()
+            )
+            row_to_node_index[next_row : next_row + rows] = torch.tensor(
+                batch_indices, dtype=torch.long
+            )
+            for idx in batch_indices:
+                visited[int(idx)] = True
+                selected_indices.append(int(idx))
+            next_row += rows
+
+    selected = [active_features[idx] for idx in selected_indices]
+    dense = _pack_selected_edge_matrix(
+        edge_matrix=edge_matrix[:next_row],
+        selected_indices=selected_indices,
+        n_features=n_features,
+        n_pos=n_pos,
+        n_logits=n_logits,
+    )
+    return selected, dense
+
+
+def run_attribution(
+    model: HookedTransformer,
+    transcoders: dict[int, SingleLayerTranscoder],
+    prompt: torch.Tensor | Sequence[int] | str,
+    *,
+    batch_size: int,
+    max_feature_nodes: int,
+    update_interval: int = 1,
+    logit_targets: Sequence[TargetSpec | object],
+    layers: Sequence[int] | None = None,
+) -> tuple[list[ActiveFeature], torch.Tensor]:
+    """Phase 0 + Phase 3 + Phase 4 attribution orchestration.
+
+    ``prompt`` may be a token tensor/list or a string accepted by
+    ``HookedTransformer.to_tokens``. The returned dense matrix is already
+    packed to the selected node set, ready for GraphLink translation.
+    """
+    if isinstance(prompt, str):
+        input_ids = model.to_tokens(prompt, prepend_bos=False)
+    else:
+        input_ids = torch.as_tensor(prompt, dtype=torch.long, device=model.W_E.device)
+    if input_ids.dim() == 1:
+        input_ids = input_ids.unsqueeze(0)
+
+    ctx = setup_attribution(
+        model,
+        input_ids,
+        batch_size=batch_size,
+        transcoders=transcoders,
+        layers=list(layers if layers is not None else sorted(transcoders)),
+    )
+    return run_attribution_from_context(
+        ctx,
+        logit_targets=logit_targets,
+        max_feature_nodes=max_feature_nodes,
+        update_interval=update_interval,
+    )
