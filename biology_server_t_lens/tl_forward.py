@@ -24,13 +24,16 @@ from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTransco
 from transformer_lens import HookedTransformer
 from transformer_lens.hook_points import HookPoint
 
-from biology_server.attribution import LayerFeatureData, layer_feature_data
+from biology_server.attribution import ActiveFeature, LayerFeatureData, layer_feature_data
 
 FwdHook = tuple[str, Callable[[torch.Tensor, HookPoint], torch.Tensor]]
 
 __all__ = [
+    "ActiveFeature",
+    "FwdHook",
     "HookState",
     "LayerFeatureData",
+    "finalize_active_features",
     "install_transcoder_hooks",
     "layer_feature_data",
 ]
@@ -67,6 +70,51 @@ class HookState:
         self.embedding_grad = None
         self.final_hidden = None
 
+    def clear_grads(self) -> None:
+        """Clear backward-captured grads, leave forward caches intact.
+
+        Call before each backward when running multiple attribution rows from
+        the same forward pass.
+        """
+        self.output_grads.clear()
+        self.embedding_grad = None
+        if self.embedding is not None and self.embedding.grad is not None:
+            self.embedding.grad = None
+
+
+def finalize_active_features(state: HookState) -> list[ActiveFeature]:
+    """Assign per-layer score offsets and flatten the active-feature list.
+
+    Mirrors ``biology_server.attribution.finalize_active_features``. Mutates
+    ``state.layer_features`` in place to set ``start`` on each ``LayerFeatureData``
+    so that ``data.start:data.end`` slices into the dense feature-score vector.
+    """
+    active: list[ActiveFeature] = []
+    offset = 0
+    for layer in state.layers:
+        data = state.layer_features[layer]
+        state.layer_features[layer] = LayerFeatureData(
+            positions=data.positions,
+            feature_ids=data.feature_ids,
+            activations=data.activations,
+            encoder_vectors=data.encoder_vectors,
+            decoder_vectors=data.decoder_vectors,
+            start=offset,
+        )
+        for local_idx in range(data.feature_ids.numel()):
+            active.append(
+                ActiveFeature(
+                    layer=layer,
+                    pos=int(data.positions[local_idx].item()),
+                    feature=int(data.feature_ids[local_idx].item()),
+                    activation=float(data.activations[local_idx].item()),
+                    encoder_vector=data.encoder_vectors[local_idx],
+                    score_index=offset + local_idx,
+                )
+            )
+        offset += int(data.feature_ids.numel())
+    return active
+
 
 def _make_mlp_in_hook(layer: int, state: HookState):
     transcoder = state.transcoders[layer]
@@ -75,7 +123,9 @@ def _make_mlp_in_hook(layer: int, state: HookState):
         state.mlp_inputs[layer] = acts
         with torch.no_grad():
             features = transcoder.encode(acts).detach()
-            data = layer_feature_data(transcoder, features.squeeze(0))
+            # All batch slots are identical (input was expanded), so the
+            # per-slot active-feature set is the same. Take slot 0.
+            data = layer_feature_data(transcoder, features[0])
         state.feature_values[layer] = features
         state.layer_features[layer] = data
         return acts
@@ -94,11 +144,20 @@ def _make_mlp_out_hook(layer: int, state: HookState):
                 features.to(transcoder.W_dec.dtype),
                 mlp_input if transcoder.W_skip is not None else None,
             ).to(acts.dtype)
+        # Ghost-skip trick (matches circuit-tracer's replacement model):
+        # numerically ``replacement == reconstruction`` because ``skip`` is the
+        # transcoder skip (or zero, scaled by mlp_input * 0) and the residual
+        # ``(reconstruction - skip)`` is detached. But the ``skip`` term has
+        # ``grad_fn`` pointing back to ``mlp_input``, so backward from
+        # ``final_hidden`` reaches ``mlp_input`` (with grad 0 from the *0
+        # multiplier) — letting a caller-installed ``register_hook`` on
+        # ``mlp_input`` override that gradient at chosen ``(slot, pos)`` slots
+        # for batched feature-target injection (see :class:`AttributionContext`).
         if transcoder.W_skip is not None:
             skip = transcoder.compute_skip(mlp_input).to(acts.dtype)
-            replacement = skip + (reconstruction - skip).detach().requires_grad_(True)
         else:
-            replacement = reconstruction.detach().requires_grad_(True)
+            skip = mlp_input * 0
+        replacement = skip + (reconstruction - skip).detach()
 
         def grab(grad: torch.Tensor) -> None:
             state.output_grads[layer] = grad.detach()
@@ -115,7 +174,9 @@ def _make_embed_hook(state: HookState):
         # hook; make sure of it in case freezes weren't installed.
         acts.requires_grad_(True)
         state.embedding = acts
-        state.token_vectors = acts.detach().squeeze(0)
+        # All batch slots see the same input (we expand), so a single
+        # ``(n_pos, d_model)`` copy is the right "per-prompt" token vector.
+        state.token_vectors = acts[0].detach()
 
         def grab(grad: torch.Tensor) -> None:
             state.embedding_grad = grad.detach()
