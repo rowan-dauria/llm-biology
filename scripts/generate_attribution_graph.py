@@ -11,10 +11,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from biology_server.attribution import (  # noqa: E402
+    DEFAULT_BATCH_SIZE,
     DEFAULT_EDGE_THRESHOLD,
     DEFAULT_GRAPH_DIR,
     DEFAULT_LAYERS,
     DEFAULT_LOGIT_PROB_THRESHOLD,
+    DEFAULT_MAX_FEATURE_NODES,
     DEFAULT_MAX_LOGIT_NODES,
     DEFAULT_NODE_THRESHOLD,
     DEFAULT_PROMPT,
@@ -35,6 +37,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--target-token", default=None)
     parser.add_argument("--target-token-id", type=int, default=None)
+    parser.add_argument("--max-feature-nodes", type=int, default=DEFAULT_MAX_FEATURE_NODES)
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--node-threshold", type=float, default=DEFAULT_NODE_THRESHOLD)
     parser.add_argument("--edge-threshold", type=float, default=DEFAULT_EDGE_THRESHOLD)
     parser.add_argument(
@@ -66,6 +70,8 @@ def main() -> None:
         layers=parse_layers(args.layers),
         model_id=args.model_id,
         graph_file_dir=args.graph_file_dir,
+        batch_size=args.batch_size,
+        max_feature_nodes=args.max_feature_nodes,
     )
     runner.generate_graph(
         args.prompt,
