@@ -1,5 +1,7 @@
 # llm-biology
-code repo for mphil project using SAEs to understand LLM reasoning
+MPhil project using SAEs to understand LLM reasoning. Uses the [circuit-tracer](https://github.com/decoderesearch/circuit-tracer) frontend and a custom attribution backend.
+
+<img width="1728" height="753" alt="Screenshot 2026-05-28 at 16 13 35" src="https://github.com/user-attachments/assets/176a9fde-8446-45dd-83d8-21936b442670" />
 
 ## Development
 
