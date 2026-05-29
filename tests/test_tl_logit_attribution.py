@@ -20,6 +20,7 @@ from transformer_lens import HookedTransformer, HookedTransformerConfig
 
 from biology_server_t_lens.tl_attribution import (
     attribute_logit_row,
+    collect_feature_scores,
     demeaned_unembed_vector,
 )
 from biology_server_t_lens.tl_forward import (
@@ -105,6 +106,12 @@ class TestLogitAttribution(unittest.TestCase):
         feature_scores, embedding_scores = attribute_logit_row(
             self.model, self.state, token_id=token_id, pos=pos
         )
+        chunked_scores = collect_feature_scores(
+            self.state,
+            len(self.active),
+            chunk_size=3,
+        )
+        self.assertTrue(torch.allclose(chunked_scores, feature_scores))
 
         # Independently contract decoder vectors with the gradients the
         # backward produced. attribute_logit_row left state.output_grads

@@ -33,6 +33,8 @@ from biology_server_t_lens.tl_forward import (
     install_transcoder_hooks,
 )
 
+DEFAULT_SCORE_CHUNK_SIZE = 32_768
+
 __all__ = [
     "AttributionContext",
     "TargetSpec",
@@ -71,6 +73,7 @@ def collect_feature_scores(
     *,
     layers: Sequence[int] | None = None,
     batch_index: int = 0,
+    chunk_size: int = DEFAULT_SCORE_CHUNK_SIZE,
 ) -> torch.Tensor:
     """Contract each tracked layer's MLP-out grad with its active decoder vecs.
 
@@ -79,6 +82,9 @@ def collect_feature_scores(
     Returns zeros for layers that didn't receive a backward (legitimate when
     the target is *upstream* of that layer).
     """
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+
     score_layers = list(state.layers) if layers is None else list(layers)
     scores: torch.Tensor | None = None
 
@@ -94,11 +100,15 @@ def collect_feature_scores(
                 device=grad.device,
             )
         assert scores is not None
-        grad_at_positions = grad[batch_index].index_select(0, data.positions.to(grad.device))
-        layer_scores = (
-            grad_at_positions.to(data.decoder_vectors.dtype) * data.decoder_vectors
-        ).sum(dim=-1)
-        scores[data.start : data.end] = layer_scores
+        n_layer_features = int(data.feature_ids.numel())
+        layer_slice = scores[data.start : data.end]
+        for start in range(0, n_layer_features, chunk_size):
+            end = min(start + chunk_size, n_layer_features)
+            positions = data.positions[start:end].to(grad.device)
+            grad_at_positions = grad[batch_index].index_select(0, positions)
+            layer_slice[start:end] = (
+                grad_at_positions.to(data.decoder_vectors.dtype) * data.decoder_vectors[start:end]
+            ).sum(dim=-1)
 
     if scores is None:
         device = state.embedding.device if state.embedding is not None else torch.device("cpu")

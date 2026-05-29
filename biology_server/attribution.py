@@ -1063,9 +1063,14 @@ def compute_feature_logits(
     out: dict[tuple[int, int], tuple[list[str], list[str]]] = {}
     for layer, feature_ids in unique_by_layer.items():
         decoder = transcoders[layer].W_dec
+        unembed_for_decoder = unembed.detach().to(device=decoder.device, dtype=unembed.dtype)
         idx = torch.tensor(feature_ids, dtype=torch.long, device=decoder.device)
-        rows = decoder.index_select(0, idx).to(unembed.dtype)
-        logits = rows @ unembed if unembed.shape[0] == rows.shape[-1] else rows @ unembed.t()
+        rows = decoder.index_select(0, idx).to(unembed_for_decoder.dtype)
+        logits = (
+            rows @ unembed_for_decoder
+            if unembed_for_decoder.shape[0] == rows.shape[-1]
+            else rows @ unembed_for_decoder.t()
+        )
         cap = min(top_k, logits.shape[-1])
         _, top_idx = logits.topk(cap, dim=-1)
         _, bot_idx = logits.topk(cap, dim=-1, largest=False)
@@ -1242,6 +1247,37 @@ class BiologyAttributionRunner:
         if torch.backends.mps.is_available() and hasattr(torch, "mps"):
             torch.mps.empty_cache()
 
+    def _move_transcoders_to_device(self, device: torch.device | str) -> None:
+        if self._transcoders is None:
+            return
+        target = torch.device(device)
+        moved = False
+        for transcoder in self._transcoders.values():
+            try:
+                current = next(transcoder.parameters()).device
+            except StopIteration:
+                current = target
+            if current != target:
+                transcoder.to(target)
+                moved = True
+        if moved:
+            gc.collect()
+            self._empty_device_cache()
+
+    def _ensure_transcoders_on_runner_device(self) -> None:
+        if self._device is None or self._transcoders is None:
+            return
+        self._move_transcoders_to_device(self._device)
+
+    def _offload_transcoders_after_forward(self) -> None:
+        if self._transcoders is None:
+            return
+        if self._device is None or self._device.type == "cpu":
+            return
+        with memory_scope("transcoders:offload to cpu after forward"):
+            self._move_transcoders_to_device("cpu")
+        memory_checkpoint("transcoders:offloaded after forward")
+
     def _release_preview_model(self) -> None:
         if self._preview_model is None:
             return
@@ -1292,6 +1328,7 @@ class BiologyAttributionRunner:
 
     def _loaded(self) -> tuple[Any, PreTrainedTokenizerBase, dict[int, SingleLayerTranscoder]]:
         self._ensure_loaded(include_transcoders=True)
+        self._ensure_transcoders_on_runner_device()
         assert self._model is not None
         assert self._tokenizer is not None
         assert self._transcoders is not None
@@ -1479,6 +1516,9 @@ class BiologyAttributionRunner:
                     f"logit nodes={len(logit_targets)}; "
                     f"active features={ctx.n_features}"
                 )
+                ctx.state.feature_values.clear()
+                ctx.state.transcoders = {}
+                self._offload_transcoders_after_forward()
 
             logit_specs = [
                 TargetSpec(
