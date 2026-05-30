@@ -62,6 +62,8 @@ class GraphJob:
     prompt: str
     slug: str
     target_token_id: int
+    target_token: str
+    target_token_prob: float
     node_threshold: float
     edge_threshold: float
     logit_prob_threshold: float
@@ -160,6 +162,8 @@ class BiologyApp:
                 prompt=preview_result.prompt,
                 slug=slug,
                 target_token_id=preview_result.target_token_id,
+                target_token=preview_result.target_token_str,
+                target_token_prob=preview_result.target_token_prob,
                 node_threshold=node_threshold,
                 edge_threshold=edge_threshold,
                 logit_prob_threshold=logit_prob_threshold,
@@ -212,6 +216,10 @@ class BiologyApp:
             result = self.runner.generate_graph(
                 job.prompt,
                 slug=job.slug,
+                target_token_id=job.target_token_id,
+                preview_top_token_id=job.target_token_id,
+                preview_top_token=job.target_token,
+                preview_top_token_prob=job.target_token_prob,
                 node_threshold=job.node_threshold,
                 edge_threshold=job.edge_threshold,
                 logit_prob_threshold=job.logit_prob_threshold,

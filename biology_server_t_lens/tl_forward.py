@@ -217,19 +217,17 @@ def _make_mlp_out_hook(layer: int, state: HookState):
             state.reconstructions[layer] = prompt_reconstruction
             state.error_vectors[layer] = error
         # Ghost-skip trick (matches circuit-tracer's replacement model):
-        # numerically ``replacement == reconstruction`` because ``skip`` is the
+        # numerically ``linear_path == reconstruction`` because ``skip`` is the
         # transcoder skip (or zero, scaled by mlp_input * 0) and the residual
-        # ``(reconstruction - skip)`` is detached. But the ``skip`` term has
-        # ``grad_fn`` pointing back to ``mlp_input``, so backward from
-        # ``final_hidden`` reaches ``mlp_input`` (with grad 0 from the *0
-        # multiplier) — letting a caller-installed ``register_hook`` on
-        # ``mlp_input`` override that gradient at chosen ``(slot, pos)`` slots
-        # for batched feature-target injection (see :class:`AttributionContext`).
+        # ``(reconstruction - skip)`` is detached. The final detached correction
+        # restores the original MLP output value while preserving the replacement
+        # gradient path and output-gradient capture.
         if transcoder.W_skip is not None:
             skip = transcoder.compute_skip(mlp_input).to(acts.dtype)
         else:
             skip = mlp_input * 0
-        replacement = skip + (reconstruction - skip).detach()
+        linear_path = skip + (reconstruction - skip).detach()
+        replacement = linear_path + (acts - linear_path).detach()
 
         def grab(grad: torch.Tensor) -> None:
             state.output_grads[layer] = grad.detach()
