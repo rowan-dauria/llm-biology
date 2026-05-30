@@ -181,20 +181,29 @@ def _zero_positions_(acts: torch.Tensor, zero_positions: slice | None) -> torch.
 
 
 def _make_mlp_in_hook(layer: int, state: HookState):
+    # Retrieve the transcoder for the current layer from the state
     transcoder = state.transcoders[layer]
 
     def hook(acts: torch.Tensor, hook: HookPoint) -> torch.Tensor:  # noqa: ARG001
+        # Cache the input activations for this layer's MLP block
         state.mlp_inputs[layer] = acts
+        # Compute features and active feature data without tracking gradients
         with torch.no_grad():
+            # Encode MLP input activations to obtain transcoder feature activations
             features = transcoder.encode(acts).detach()
+            # Zero out feature activations at the specified positions (e.g., prefix tokens)
             _zero_positions_(features, state.zero_positions)
             # All batch slots are identical (input was expanded), so the
             # per-slot active-feature set is the same. Take slot 0.
             data = layer_feature_data(transcoder, features[0])
+        # Cache the computed feature activations for subsequent decoding and error vector steps
         state.feature_values[layer] = features
+        # Cache the structured active feature data (indices, decoders, encoders)
         state.layer_features[layer] = data
+        # Return the original input activations unmodified to preserve the forward pass
         return acts
 
+    # Return the generated hook function
     return hook
 
 
