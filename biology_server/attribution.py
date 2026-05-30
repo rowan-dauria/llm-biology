@@ -13,6 +13,7 @@ import re
 import threading
 import time
 import types
+import warnings
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -530,6 +531,50 @@ def load_transcoders(
                 f"skip={transcoder.W_skip is not None}"
             )
     return transcoders
+
+
+def prepend_special_prefix(
+    tokenizer: PreTrainedTokenizerBase, input_ids: torch.Tensor
+) -> torch.Tensor:
+    """Ensure position 0 is a special token, mirroring circuit-tracer's ``ensure_tokenized``.
+
+    The first sequence position carries an outsized norm and an excessive number
+    of active features (the attention-sink artifact). Circuit-tracer keeps the
+    attribution graph clean by always making position 0 a throw-away special
+    token, which is then zeroed by the ``zero_positions`` policy. Without this,
+    Qwen3's BOS-free tokenization puts a *real content* token at position 0, so
+    the prefix-zeroing silently strips that token's features and error node.
+
+    ``input_ids`` is shaped ``(1, n_pos)``. Returns it unchanged if the first
+    token is already special, otherwise ``(1, n_pos + 1)`` with a special id
+    (BOS, else PAD, else EOS, else the first registered special id) prepended.
+    """
+    if input_ids.ndim != 2 or input_ids.shape[0] != 1:
+        raise ValueError(f"expected (1, n_pos) input_ids, got {tuple(input_ids.shape)}")
+    if input_ids.shape[1] == 0:
+        return input_ids
+
+    special_ids = set(getattr(tokenizer, "all_special_ids", None) or [])
+    if int(input_ids[0, 0].item()) in special_ids:
+        return input_ids
+
+    candidates = [
+        getattr(tokenizer, "bos_token_id", None),
+        getattr(tokenizer, "pad_token_id", None),
+        getattr(tokenizer, "eos_token_id", None),
+        *sorted(special_ids),
+    ]
+    prefix_id = next((tid for tid in candidates if tid is not None), None)
+    if prefix_id is None:
+        warnings.warn(
+            "No special token available to prepend; the first content token will be "
+            "zeroed by the prefix-zeroing policy and have no features.",
+            stacklevel=2,
+        )
+        return input_ids
+
+    prefix = torch.full((1, 1), int(prefix_id), dtype=input_ids.dtype, device=input_ids.device)
+    return torch.cat([prefix, input_ids], dim=1)
 
 
 def select_target_token(
@@ -1425,6 +1470,11 @@ class BiologyAttributionRunner:
                 enable_thinking=False,
             )
         input_ids = tokenizer([text], return_tensors="pt").input_ids.to(self._device)
+        # Mirror circuit-tracer: guarantee position 0 is a (throw-away) special
+        # token so the prefix-zeroing policy zeros that token instead of the
+        # first real content token. Skips prepending if a special token (e.g. a
+        # chat-template prefix or an already-added BOS) is present at position 0.
+        input_ids = prepend_special_prefix(tokenizer, input_ids)
 
         input_token_ids = [int(token_id) for token_id in input_ids[0].detach().cpu().tolist()]
         prompt_tokens = tokenizer.batch_decode([[token_id] for token_id in input_token_ids])

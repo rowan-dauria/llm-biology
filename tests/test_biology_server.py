@@ -30,6 +30,7 @@ from biology_server.attribution import (
     indirect_logit_influence,
     logit_weights_from_dense_matrix,
     make_mlp_hook,
+    prepend_special_prefix,
     prune_edges_by_thresholded_influence,
     prune_graph_by_indirect_influence,
     row_links,
@@ -457,6 +458,37 @@ class BiologyServerTests(unittest.TestCase):
             },
         )
         self.assertEqual(weights, {0: 0.0})
+
+    def test_prepend_special_prefix_adds_bos_when_first_token_is_content(self) -> None:
+        class _Tok:
+            all_special_ids = [100, 101]
+            bos_token_id = None
+            pad_token_id = 100
+            eos_token_id = 101
+
+        out = prepend_special_prefix(_Tok(), torch.tensor([[5, 6, 7]]))
+        self.assertEqual(out.tolist(), [[100, 5, 6, 7]])
+
+    def test_prepend_special_prefix_noop_when_first_token_already_special(self) -> None:
+        class _Tok:
+            all_special_ids = [100, 101]
+            bos_token_id = 100
+            pad_token_id = 100
+            eos_token_id = 101
+
+        out = prepend_special_prefix(_Tok(), torch.tensor([[100, 5, 6]]))
+        self.assertEqual(out.tolist(), [[100, 5, 6]])
+
+    def test_prepend_special_prefix_warns_when_no_special_token(self) -> None:
+        class _Tok:
+            all_special_ids: list[int] = []
+            bos_token_id = None
+            pad_token_id = None
+            eos_token_id = None
+
+        with self.assertWarns(UserWarning):
+            out = prepend_special_prefix(_Tok(), torch.tensor([[5, 6]]))
+        self.assertEqual(out.tolist(), [[5, 6]])
 
     def test_top_token_parity_requires_same_top_id_and_close_probability(self) -> None:
         preview_top = TokenCandidate(token_id=2, token=" world", prob=0.75)
