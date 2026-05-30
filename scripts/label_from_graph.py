@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -25,7 +26,8 @@ from feature_lookup.labels import load_feature_labels  # noqa: E402
 from feature_lookup.patch_graph_labels import DEFAULT_SCAN_DIR, patch_graph  # noqa: E402
 
 DEFAULT_GRAPH_DIR = PROJECT_ROOT / "data" / "ui_graphs"
-DEFAULT_TOPK_DIR = PROJECT_ROOT / "data" / "feature_topk" / "150k-pile"
+FOLDER_SLUG = f"{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}-150k-pile"
+DEFAULT_TOPK_DIR = PROJECT_ROOT / "data" / "feature_topk" / FOLDER_SLUG
 DEFAULT_ALPHA = 0.5
 DEFAULT_PROVIDER = "transformers"
 DEFAULT_CONCURRENCY = 8
