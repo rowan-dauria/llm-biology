@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 import torch
-from tqdm import tqdm
+from tqdm import tqdm  # type: ignore
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # Configuration

@@ -256,7 +256,7 @@ def _run_transformers_labels(
     *,
     source_tag: str | None = None,
 ) -> None:
-    from tqdm import tqdm
+    from tqdm import tqdm  # type: ignore
 
     state = _load_transformers(model_id)
     tokenizer = state["tokenizer"]
@@ -498,7 +498,7 @@ async def _run_api_labels(
         asyncio.create_task(run_one(summary, user_prompt)) for summary, user_prompt in payloads
     ]
     with output_path.open("a", encoding="utf-8") as handle:
-        from tqdm import tqdm
+        from tqdm import tqdm  # type: ignore
 
         for task in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="features"):
             outcome = await task

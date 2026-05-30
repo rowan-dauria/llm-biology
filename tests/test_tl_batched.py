@@ -129,17 +129,19 @@ class TestBatchedAttribution(unittest.TestCase):
             serial_state.layer_features[layer].feature_ids.numel() for layer in serial_state.layers
         )
         n_pos = self.model.cfg.n_ctx
+        n_errors = len(serial_state.layers) * self.model.cfg.n_ctx
         serial_feature = torch.zeros(len(targets), n_features)
+        serial_error = torch.zeros(len(targets), n_errors)
         serial_embed = torch.zeros(len(targets), n_pos)
         for row, target in enumerate(targets):
             if target.kind == "logit":
                 assert target.token_id is not None
-                fs, es = attribute_logit_row(
+                fs, errs, es = attribute_logit_row(
                     self.model, serial_state, token_id=target.token_id, pos=target.pos
                 )
             else:
                 assert target.layer is not None and target.encoder_vector is not None
-                fs, es = attribute_feature_row(
+                fs, errs, es = attribute_feature_row(
                     self.model,
                     serial_state,
                     target_layer=target.layer,
@@ -147,6 +149,7 @@ class TestBatchedAttribution(unittest.TestCase):
                     encoder_vector=target.encoder_vector,
                 )
             serial_feature[row] = fs.detach()
+            serial_error[row] = errs.detach()
             serial_embed[row] = es.detach()
 
         # Batched: setup_attribution expands tokens to (batch_size, n_pos)
@@ -178,7 +181,7 @@ class TestBatchedAttribution(unittest.TestCase):
             else:
                 batched_targets.append(target)
 
-        batched_feature, batched_embed = ctx.compute_batch(batched_targets)
+        batched_feature, batched_error, batched_embed = ctx.compute_batch(batched_targets)
 
         # Active-feature ordering must match between serial and batched
         # (same transcoder weights + same input).
@@ -193,6 +196,16 @@ class TestBatchedAttribution(unittest.TestCase):
             ),
             f"batched feature scores differ from serial: "
             f"max |Δ| = {(batched_feature[: len(targets)] - serial_feature).abs().max().item():.3e}",
+        )
+        self.assertTrue(
+            torch.allclose(
+                batched_error[: len(targets)],
+                serial_error,
+                atol=1e-4,
+                rtol=1e-4,
+            ),
+            f"batched error scores differ from serial: "
+            f"max |Δ| = {(batched_error[: len(targets)] - serial_error).abs().max().item():.3e}",
         )
         self.assertTrue(
             torch.allclose(
@@ -223,8 +236,9 @@ class TestBatchedAttribution(unittest.TestCase):
             )
             for k in range(batch_size)
         ]
-        feature, embed = ctx.compute_batch(targets, retain_graph=False)
+        feature, error, embed = ctx.compute_batch(targets, retain_graph=False)
         self.assertEqual(feature.shape[0], batch_size)
+        self.assertEqual(error.shape[0], batch_size)
         self.assertEqual(embed.shape[0], batch_size)
 
     def test_setup_uses_detached_single_logits_and_pre_unembed_residual(self):

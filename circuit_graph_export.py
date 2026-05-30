@@ -22,6 +22,13 @@ class FeatureNode:
 
 
 @dataclass(frozen=True, slots=True)
+class ErrorNode:
+    layer: int
+    pos: int
+    influence: float | None = 0.0
+
+
+@dataclass(frozen=True, slots=True)
 class GraphLink:
     source: str
     target: str
@@ -51,6 +58,10 @@ def feature_node_id(layer: int, feature: int, pos: int) -> str:
     return f"{layer}_{feature}_{pos}"
 
 
+def error_node_id(layer: int, pos: int) -> str:
+    return f"0_{layer}_{pos}"
+
+
 def embedding_node_id(vocab_idx: int, pos: int) -> str:
     return f"E_{vocab_idx}_{pos}"
 
@@ -74,6 +85,26 @@ def _feature_node_to_json(node: FeatureNode) -> dict[str, Any]:
         "jsNodeId": f"{node.layer}_{node.feature}-0",
         "clerp": node.clerp,
         "activation": node.activation,
+        "vis_link": "",
+    }
+    if node.influence is not None:
+        data["influence"] = node.influence
+    return data
+
+
+def _error_node_to_json(node: ErrorNode) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "node_id": error_node_id(node.layer, node.pos),
+        "feature": -1,
+        "layer": str(node.layer),
+        "ctx_idx": node.pos,
+        "feature_type": "mlp reconstruction error",
+        "token_prob": 0.0,
+        "is_target_logit": False,
+        "run_idx": 0,
+        "reverse_ctx_idx": 0,
+        "jsNodeId": f"{node.layer}_{node.pos}-0",
+        "clerp": "",
         "vis_link": "",
     }
     if node.influence is not None:
@@ -277,6 +308,7 @@ def export_circuit_graph(
     target_token_str: str,
     target_token_prob: float,
     logit_nodes: list[LogitNode] | None = None,
+    error_nodes: list[ErrorNode] | None = None,
     node_threshold: float | None = None,
     feature_examples: dict[int, dict[str, Any]] | None = None,
     scan: str = LOCAL_SCAN,
@@ -297,6 +329,7 @@ def export_circuit_graph(
     ]
     default_logit_id = logit_node_id(num_layers, logit_nodes[0].vocab_idx, len(prompt_tokens) - 1)
     nodes = [_feature_node_to_json(node) for node in feature_nodes]
+    nodes.extend(_error_node_to_json(node) for node in error_nodes or [])
     nodes.extend(
         _embedding_node_to_json(pos, vocab_idx) for pos, vocab_idx in enumerate(input_token_ids)
     )
