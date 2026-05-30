@@ -227,6 +227,25 @@ class TestBatchedAttribution(unittest.TestCase):
         self.assertEqual(feature.shape[0], batch_size)
         self.assertEqual(embed.shape[0], batch_size)
 
+    def test_setup_uses_detached_single_logits_and_pre_unembed_residual(self):
+        batch_size = 5
+        ctx = setup_attribution(
+            self.model,
+            self.tokens,
+            batch_size=batch_size,
+            transcoders=self.transcoders,
+            layers=list(range(self.model.cfg.n_layers)),
+        )
+
+        self.assertEqual(ctx.logits.shape, (1, self.model.cfg.n_ctx, self.model.cfg.d_vocab))
+        self.assertFalse(ctx.logits.requires_grad)
+        assert ctx.state.final_hidden is not None
+        self.assertEqual(
+            ctx.state.final_hidden.shape,
+            (batch_size, self.model.cfg.n_ctx, self.model.cfg.d_model),
+        )
+        self.assertTrue(ctx.state.final_hidden.requires_grad)
+
 
 if __name__ == "__main__":
     unittest.main()

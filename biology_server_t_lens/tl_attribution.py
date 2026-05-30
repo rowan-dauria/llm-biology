@@ -3,8 +3,8 @@
 Three layers of API, all consuming a populated :class:`HookState`:
 
 - :func:`attribute_logit_row` — one backward from ``state.final_hidden`` with a
-  demeaned-unembed gradient at a single ``(0, pos, :)`` slot. Source attribution
-  for a single logit target. (Chunk 4.)
+  demeaned-unembed gradient at a single ``(0, pos, :)`` slot. ``final_hidden``
+  is the post-final-norm, pre-unembed residual. (Chunk 4.)
 - :func:`attribute_feature_row` — one backward from ``state.mlp_inputs[layer]``
   with an encoder vector at a single ``(0, pos, :)`` slot. Source attribution
   for a single feature target. (Chunk 5.) Intentionally slow; correctness
@@ -124,6 +124,13 @@ def collect_embedding_scores(state: HookState, *, batch_index: int = 0) -> torch
     ).sum(dim=-1)
 
 
+def detached_logits(model: HookedTransformer, input_ids: torch.Tensor) -> torch.Tensor:
+    """Compute logits for target selection without retaining an attribution graph."""
+
+    with torch.no_grad():
+        return model(input_ids).detach()
+
+
 def attribute_logit_row(
     model: HookedTransformer,
     state: HookState,
@@ -131,7 +138,7 @@ def attribute_logit_row(
     token_id: int,
     pos: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Single-target logit attribution. One backward from ``state.final_hidden``."""
+    """Single-target logit attribution from post-final-norm residual."""
     fh = state.final_hidden
     if fh is None:
         raise RuntimeError("Final hidden state was not captured; run forward first")
@@ -274,7 +281,7 @@ class AttributionContext:
         self.model = model
         self.state = state
         self.batch_size = batch_size
-        self.logits = logits
+        self.logits = logits.detach()
         self.n_features = total_active_features(state)
         self.n_pos = state.token_vectors.shape[0] if state.token_vectors is not None else 0
 
@@ -381,25 +388,29 @@ def setup_attribution(
     transcoders: dict[int, SingleLayerTranscoder],
     layers: Sequence[int],
 ) -> AttributionContext:
-    """Run one forward over an ``(batch_size, n_pos)``-expanded prompt.
+    """Run one retained forward over an expanded prompt, stopping before unembed.
 
     ``input_ids`` may be ``(n_pos,)`` or ``(1, n_pos)`` — both are expanded.
-    Returns a populated :class:`AttributionContext`. The forward pass holds
-    onto the autograd graph (``retain_graph`` is the caller's job via
-    :meth:`AttributionContext.compute_batch`).
+    Logits are computed first under ``no_grad`` for target selection, then the
+    attribution forward is expanded to ``(batch_size, n_pos)`` and stopped after
+    the final block. ``ln_final`` is applied manually so ``state.final_hidden``
+    is the post-final-norm, pre-unembed residual.
     """
     if input_ids.dim() == 1:
         input_ids = input_ids.unsqueeze(0)
     if input_ids.shape[0] != 1:
         raise ValueError(f"Expected (1, n_pos) or (n_pos,), got {tuple(input_ids.shape)}")
+    logits = detached_logits(model, input_ids)
     expanded = input_ids.expand(batch_size, -1).contiguous()
 
     state = HookState(layers=list(layers), transcoders=transcoders)
     fwd_hooks = install_transcoder_hooks(model, transcoders, state)
-    # We use model.hooks(...) as a context — but we need the graph to live past
-    # the context exit. Use run_with_hooks (which removes hooks after forward
-    # but keeps the autograd graph alive on the cached tensors).
-    logits = model.run_with_hooks(expanded, fwd_hooks=fwd_hooks)
+    residual = model.run_with_hooks(
+        expanded,
+        fwd_hooks=fwd_hooks,
+        stop_at_layer=model.cfg.n_layers,
+    )
+    state.final_hidden = model.ln_final(residual)
     finalize_active_features(state)
     return AttributionContext(model, state, batch_size, logits)
 
