@@ -63,7 +63,7 @@ DEFAULT_LOGITS_TOP_K = 10
 DEFAULT_NODE_THRESHOLD = 0.8
 DEFAULT_EDGE_THRESHOLD = 0.98
 DEFAULT_LOGIT_PROB_THRESHOLD = 0.95
-DEFAULT_MAX_LOGIT_NODES = 4
+DEFAULT_MAX_LOGIT_NODES = 10
 DEFAULT_BATCH_SIZE = 128
 DEFAULT_UPDATE_INTERVAL = 1
 DEFAULT_PREVIEW_TL_PROB_TOLERANCE = 0.1
@@ -981,18 +981,27 @@ def keep_feature_ids_by_threshold(
     *,
     cumulative_by_id: dict[str, float],
     feature_ids: list[str],
+    candidate_ids: list[str] | None = None,
     threshold: float,
 ) -> set[str]:
-    kept = {
-        node_id
-        for node_id in feature_ids
-        if node_id in cumulative_by_id and cumulative_by_id[node_id] <= threshold
-    }
-    if kept or not cumulative_by_id:
-        return kept
+    feature_id_set = set(feature_ids)
+    # ``cumulative_by_id`` already encodes the influence-sorted prefix mass.
+    # Walk that prefix over all pruning candidates, but only return feature IDs:
+    # embeddings/error nodes participate in the cutoff while remaining unpruned.
+    ordered_candidates = [
+        node_id for node_id in (candidate_ids or feature_ids) if node_id in cumulative_by_id
+    ]
+    ordered_candidates.sort(key=lambda node_id: cumulative_by_id[node_id])
 
-    best_id = min(cumulative_by_id, key=cumulative_by_id.__getitem__)
-    return {best_id}
+    kept: set[str] = set()
+    for node_id in ordered_candidates:
+        if node_id in feature_id_set:
+            kept.add(node_id)
+        # Keep the node that crosses the threshold; Appendix F defines pruning
+        # by the smallest prefix whose cumulative influence reaches the target.
+        if cumulative_by_id[node_id] >= threshold:
+            break
+    return kept
 
 
 def prune_edges_by_thresholded_influence(
@@ -1056,10 +1065,12 @@ def prune_graph_by_indirect_influence(
         links=links,
         logit_weights=logit_weights,
     )
-    cumulative_by_id = cumulative_scores(scores=node_scores, candidate_ids=feature_ids)
+    non_logit_ids = feature_ids + error_node_ids + embedding_ids
+    cumulative_by_id = cumulative_scores(scores=node_scores, candidate_ids=non_logit_ids)
     kept_feature_ids = keep_feature_ids_by_threshold(
         cumulative_by_id=cumulative_by_id,
         feature_ids=feature_ids,
+        candidate_ids=non_logit_ids,
         threshold=node_threshold,
     )
     kept_node_ids = set(error_node_ids) | set(embedding_ids) | set(logit_weights) | kept_feature_ids

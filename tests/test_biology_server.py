@@ -408,6 +408,74 @@ class BiologyServerTests(unittest.TestCase):
             },
         )
 
+    def test_node_pruning_keeps_feature_that_crosses_threshold(self) -> None:
+        logit_id = logit_node_id(36, 99, 0)
+        feature_a = SelectedFeature(
+            layer=2,
+            pos=0,
+            feature=10,
+            activation=1.0,
+            logit_weight=0.0,
+            clerp="a",
+        )
+        feature_b = SelectedFeature(
+            layer=3,
+            pos=0,
+            feature=11,
+            activation=1.0,
+            logit_weight=0.0,
+            clerp="b",
+        )
+        links = [
+            GraphLink(source=feature_a.node_id, target=logit_id, weight=7.0),
+            GraphLink(source=feature_b.node_id, target=logit_id, weight=3.0),
+        ]
+
+        pruned_features, _ = prune_graph_by_indirect_influence(
+            selected=[feature_a, feature_b],
+            input_token_ids=[],
+            links=links,
+            logit_targets=[LogitTarget(token_id=99, token="T99", prob=1.0, node_id=logit_id)],
+            node_threshold=0.8,
+            edge_threshold=1.0,
+        )
+
+        self.assertEqual(
+            [feature.node_id for feature in pruned_features],
+            [feature_a.node_id, feature_b.node_id],
+        )
+
+    def test_node_pruning_counts_unpruned_embeddings_in_cutoff(self) -> None:
+        logit_id = logit_node_id(36, 99, 0)
+        feature = SelectedFeature(
+            layer=2,
+            pos=0,
+            feature=10,
+            activation=1.0,
+            logit_weight=0.0,
+            clerp="a",
+        )
+        embedding_id = embedding_node_id(1, 0)
+        links = [
+            GraphLink(source=embedding_id, target=logit_id, weight=9.0),
+            GraphLink(source=feature.node_id, target=logit_id, weight=1.0),
+        ]
+
+        pruned_features, pruned_links = prune_graph_by_indirect_influence(
+            selected=[feature],
+            input_token_ids=[1],
+            links=links,
+            logit_targets=[LogitTarget(token_id=99, token="T99", prob=1.0, node_id=logit_id)],
+            node_threshold=0.8,
+            edge_threshold=1.0,
+        )
+
+        self.assertEqual(pruned_features, [])
+        self.assertEqual(
+            [(link.source, link.target, link.weight) for link in pruned_links],
+            [(embedding_id, logit_id, 9.0)],
+        )
+
     def test_dense_matrix_translation_includes_error_nodes_between_features_and_tokens(
         self,
     ) -> None:
@@ -551,6 +619,14 @@ class BiologyServerTests(unittest.TestCase):
 
         self.assertEqual([target.token_id for target in targets], [0, 1])
         self.assertEqual(len(capped), 3)
+
+    def test_select_logit_targets_default_cap_matches_paper(self) -> None:
+        tokenizer = TinyTokenizer()
+        logits = torch.zeros(20)
+
+        targets = select_logit_targets(tokenizer, logits, pos=4)
+
+        self.assertEqual(len(targets), 10)
 
     def test_mlp_hook_preserves_skip_reconstruction_value_and_skip_gradient(self) -> None:
         transcoder = SingleLayerTranscoder(
