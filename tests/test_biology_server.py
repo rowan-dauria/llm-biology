@@ -13,6 +13,7 @@ from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTransco
 
 import biology_server.server as server_module
 from biology_server.attribution import (
+    ActiveFeature,
     GraphLink,
     GraphResult,
     HookState,
@@ -24,7 +25,9 @@ from biology_server.attribution import (
     _detached_eager_attention_forward,
     _patched_rms_norm_forward,
     collect_feature_scores,
+    dense_edge_matrix_links,
     indirect_logit_influence,
+    logit_weights_from_dense_matrix,
     make_mlp_hook,
     prune_edges_by_thresholded_influence,
     prune_graph_by_indirect_influence,
@@ -32,7 +35,7 @@ from biology_server.attribution import (
     select_logit_targets,
 )
 from biology_server.server import serve
-from circuit_graph_export import embedding_node_id, logit_node_id
+from circuit_graph_export import ErrorNode, embedding_node_id, error_node_id, logit_node_id
 
 
 class TinyTokenizer:
@@ -394,6 +397,57 @@ class BiologyServerTests(unittest.TestCase):
                 (feature_a.node_id, logit_id),
             },
         )
+
+    def test_dense_matrix_translation_includes_error_nodes_between_features_and_tokens(
+        self,
+    ) -> None:
+        feature = SelectedFeature(
+            layer=2,
+            pos=0,
+            feature=10,
+            activation=1.0,
+            logit_weight=0.0,
+            clerp="a",
+            score_index=0,
+        )
+        error_nodes = [ErrorNode(layer=2, pos=0), ErrorNode(layer=2, pos=1)]
+        logit_id = logit_node_id(36, 99, 0)
+        matrix = torch.zeros(5, 5)
+        matrix[0, 2] = -0.3
+        matrix[4, 1] = 0.8
+
+        links = dense_edge_matrix_links(
+            selected=[feature],
+            error_nodes=error_nodes,
+            input_token_ids=[1],
+            logit_targets=[LogitTarget(token_id=99, token="T99", prob=0.9, node_id=logit_id)],
+            dense_edge_matrix=matrix,
+        )
+        weights = logit_weights_from_dense_matrix(
+            dense_edge_matrix=matrix,
+            selected=[
+                ActiveFeature(
+                    layer=2,
+                    pos=0,
+                    feature=10,
+                    activation=1.0,
+                    encoder_vector=torch.zeros(2),
+                    score_index=0,
+                )
+            ],
+            logit_targets=[LogitTarget(token_id=99, token="T99", prob=0.9, node_id=logit_id)],
+            n_pos=1,
+            n_error_nodes=2,
+        )
+
+        self.assertEqual(
+            {(link.source, link.target, round(link.weight, 3)) for link in links},
+            {
+                (error_node_id(2, 1), feature.node_id, -0.3),
+                (error_node_id(2, 0), logit_id, 0.8),
+            },
+        )
+        self.assertEqual(weights, {0: 0.0})
 
     def test_edge_pruning_uses_target_score_and_preserves_signed_weights(self) -> None:
         links = [

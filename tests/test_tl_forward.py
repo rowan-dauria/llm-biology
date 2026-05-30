@@ -116,12 +116,48 @@ class TestTLForward(unittest.TestCase):
             tc = self.transcoders[layer]
             with torch.no_grad():
                 features = tc.encode(mlp_in)
+                features[:, 0, :] = 0
                 expected = tc.decode(features.to(tc.W_dec.dtype), None).to(captured[layer].dtype)
             self.assertTrue(
                 torch.allclose(captured[layer], expected, atol=1e-5, rtol=1e-5),
                 f"layer {layer}: mlp_out != transcoder reconstruction "
                 f"(max |Δ|={(captured[layer] - expected).abs().max().item():.3e})",
             )
+
+    def test_feature_and_error_caches_zero_prefix_position(self):
+        original_mlp_out: dict[int, torch.Tensor] = {}
+        fwd_hooks = install_transcoder_hooks(self.model, self.transcoders, self.state)
+        for layer in self.state.layers:
+
+            def capture_original(acts: torch.Tensor, hook, layer=layer) -> torch.Tensor:  # noqa: ARG001
+                original_mlp_out[layer] = acts.detach().clone()
+                return acts
+
+            fwd_hooks.append((f"blocks.{layer}.mlp.hook_out", capture_original))
+
+        self.model.run_with_hooks(self.tokens, fwd_hooks=fwd_hooks)
+
+        for layer in self.state.layers:
+            mlp_in = self.state.mlp_inputs[layer]
+            tc = self.transcoders[layer]
+            with torch.no_grad():
+                features = tc.encode(mlp_in)
+                features[:, 0, :] = 0
+                reconstruction = tc.decode(features.to(tc.W_dec.dtype), None).to(
+                    original_mlp_out[layer].dtype
+                )
+                expected_error = original_mlp_out[layer][0] - reconstruction[0]
+                expected_error[0] = 0
+
+            self.assertTrue(bool((self.state.layer_features[layer].positions != 0).all().item()))
+            self.assertTrue(
+                torch.allclose(
+                    self.state.feature_values[layer][:, 0],
+                    torch.zeros_like(self.state.feature_values[layer][:, 0]),
+                )
+            )
+            self.assertTrue(torch.allclose(self.state.reconstructions[layer], reconstruction[0]))
+            self.assertTrue(torch.allclose(self.state.error_vectors[layer], expected_error))
 
     def test_mlp_input_is_post_ln2_weighted_tensor(self):
         for layer in self.state.layers:

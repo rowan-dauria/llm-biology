@@ -103,7 +103,7 @@ class TestLogitAttribution(unittest.TestCase):
     def test_feature_score_equals_decoder_dot_grad_at_mlp_out(self):
         token_id = 5
         pos = self.model.cfg.n_ctx - 1
-        feature_scores, embedding_scores = attribute_logit_row(
+        feature_scores, error_scores, embedding_scores = attribute_logit_row(
             self.model, self.state, token_id=token_id, pos=pos
         )
         chunked_scores = collect_feature_scores(
@@ -125,6 +125,15 @@ class TestLogitAttribution(unittest.TestCase):
             expected = float((d * g).sum().item())
             got = float(feature_scores[f.score_index].item())
             self.assertAlmostEqual(got, expected, places=5)
+
+        # Error scores: contract output grads with the per-position
+        # reconstruction residuals.
+        n_pos = self.model.cfg.n_ctx
+        for layer_idx, layer in enumerate(self.state.layers):
+            error = self.state.error_vectors[layer].to(self.state.output_grads[layer].device)
+            expected = (self.state.output_grads[layer][0].to(error.dtype) * error).sum(dim=-1)
+            got = error_scores[layer_idx * n_pos : (layer_idx + 1) * n_pos]
+            self.assertTrue(torch.allclose(got, expected, atol=1e-5, rtol=1e-5))
 
         # Embedding scores: contract embedding_grad with token_vectors.
         assert self.state.embedding_grad is not None

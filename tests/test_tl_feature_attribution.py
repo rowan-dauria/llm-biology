@@ -123,7 +123,7 @@ class TestFeatureAttribution(unittest.TestCase):
         target_pos = self.model.cfg.n_ctx - 1
         encoder = self._target_encoder(state, target_layer, target_pos)
 
-        feature_scores, _ = attribute_feature_row(
+        feature_scores, _, _ = attribute_feature_row(
             self.model,
             state,
             target_layer=target_layer,
@@ -165,7 +165,7 @@ class TestFeatureAttribution(unittest.TestCase):
         target_pos = n_ctx - 1
         encoder = self._target_encoder(state, target_layer, target_pos)
 
-        feature_scores, _ = attribute_feature_row(
+        feature_scores, _, _ = attribute_feature_row(
             self.model,
             state,
             target_layer=target_layer,
@@ -198,7 +198,7 @@ class TestFeatureAttribution(unittest.TestCase):
         target_pos = self.model.cfg.n_ctx - 1
         encoder = self._target_encoder(state, target_layer, target_pos)
 
-        feature_scores, _ = attribute_feature_row(
+        feature_scores, error_scores, _ = attribute_feature_row(
             self.model,
             state,
             target_layer=target_layer,
@@ -217,6 +217,15 @@ class TestFeatureAttribution(unittest.TestCase):
                 expected = float((d * grad[0, src_pos]).sum().item())
                 got = float(feature_scores[data.start + local_idx].item())
                 self.assertAlmostEqual(got, expected, places=5)
+
+        n_pos = self.model.cfg.n_ctx
+        for layer in [layer_idx for layer_idx in state.layers if layer_idx < target_layer]:
+            error = state.error_vectors[layer].to(state.output_grads[layer].device)
+            grad = state.output_grads[layer]
+            start = state.layers.index(layer) * n_pos
+            expected = (grad[0].to(error.dtype) * error).sum(dim=-1)
+            got = error_scores[start : start + n_pos]
+            self.assertTrue(torch.allclose(got, expected, atol=1e-5, rtol=1e-5))
 
 
 if __name__ == "__main__":

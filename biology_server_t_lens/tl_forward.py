@@ -28,9 +28,11 @@ from transformer_lens.hook_points import HookPoint
 from biology_server.attribution import ActiveFeature, LayerFeatureData, layer_feature_data
 
 FwdHook = tuple[str, Callable[[torch.Tensor, HookPoint], torch.Tensor]]
+DEFAULT_ZERO_POSITIONS = slice(0, 1)
 
 __all__ = [
     "ActiveFeature",
+    "DEFAULT_ZERO_POSITIONS",
     "FwdHook",
     "HookState",
     "LayerFeatureData",
@@ -54,9 +56,13 @@ class HookState:
 
     layers: list[int]
     transcoders: dict[int, SingleLayerTranscoder]
+    zero_positions: slice | None = DEFAULT_ZERO_POSITIONS
     mlp_inputs: dict[int, torch.Tensor] = field(default_factory=dict)
     feature_values: dict[int, torch.Tensor] = field(default_factory=dict)
     layer_features: dict[int, LayerFeatureData] = field(default_factory=dict)
+    original_mlp_outputs: dict[int, torch.Tensor] = field(default_factory=dict)
+    reconstructions: dict[int, torch.Tensor] = field(default_factory=dict)
+    error_vectors: dict[int, torch.Tensor] = field(default_factory=dict)
     output_grads: dict[int, torch.Tensor] = field(default_factory=dict)
     embedding: torch.Tensor | None = None
     token_vectors: torch.Tensor | None = None
@@ -67,6 +73,9 @@ class HookState:
         self.mlp_inputs.clear()
         self.feature_values.clear()
         self.layer_features.clear()
+        self.original_mlp_outputs.clear()
+        self.reconstructions.clear()
+        self.error_vectors.clear()
         self.output_grads.clear()
         self.embedding = None
         self.token_vectors = None
@@ -160,6 +169,17 @@ def finalize_active_features(state: HookState) -> list[ActiveFeature]:
     return active
 
 
+def _zero_positions_(acts: torch.Tensor, zero_positions: slice | None) -> torch.Tensor:
+    if zero_positions is not None:
+        if acts.dim() == 3:
+            acts[:, zero_positions, :] = 0
+        elif acts.dim() == 2:
+            acts[zero_positions, :] = 0
+        else:
+            raise ValueError(f"expected rank-2 or rank-3 tensor, got {acts.dim()}")
+    return acts
+
+
 def _make_mlp_in_hook(layer: int, state: HookState):
     transcoder = state.transcoders[layer]
 
@@ -167,6 +187,7 @@ def _make_mlp_in_hook(layer: int, state: HookState):
         state.mlp_inputs[layer] = acts
         with torch.no_grad():
             features = transcoder.encode(acts).detach()
+            _zero_positions_(features, state.zero_positions)
             # All batch slots are identical (input was expanded), so the
             # per-slot active-feature set is the same. Take slot 0.
             data = layer_feature_data(transcoder, features[0])
@@ -188,6 +209,13 @@ def _make_mlp_out_hook(layer: int, state: HookState):
                 features.to(transcoder.W_dec.dtype),
                 mlp_input if transcoder.W_skip is not None else None,
             ).to(acts.dtype)
+            original = acts[0].detach()
+            prompt_reconstruction = reconstruction[0].detach()
+            error = original - prompt_reconstruction
+            _zero_positions_(error, state.zero_positions)
+            state.original_mlp_outputs[layer] = original
+            state.reconstructions[layer] = prompt_reconstruction
+            state.error_vectors[layer] = error
         # Ghost-skip trick (matches circuit-tracer's replacement model):
         # numerically ``replacement == reconstruction`` because ``skip`` is the
         # transcoder skip (or zero, scaled by mlp_input * 0) and the residual

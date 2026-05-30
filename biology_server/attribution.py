@@ -36,10 +36,12 @@ from biology_server_t_lens.memory_profile import (
     memory_scope,
 )
 from circuit_graph_export import (
+    ErrorNode,
     FeatureNode,
     GraphLink,
     LogitNode,
     embedding_node_id,
+    error_node_id,
     export_circuit_graph,
     feature_node_id,
     logit_node_id,
@@ -184,6 +186,7 @@ class GraphResult:
     input_token_ids: list[int]
     selected_features: list[SelectedFeature]
     links: list[GraphLink]
+    error_nodes: list[ErrorNode] = field(default_factory=list)
     logit_targets: list[LogitTarget] = field(default_factory=list)
     pt_path: Path | None = None
 
@@ -659,12 +662,17 @@ def selected_features_from_active(
     ]
 
 
+def error_nodes_for_layers(layers: list[int], n_pos: int) -> list[ErrorNode]:
+    return [ErrorNode(layer=layer, pos=pos) for layer in layers for pos in range(n_pos)]
+
+
 def logit_weights_from_dense_matrix(
     *,
     dense_edge_matrix: torch.Tensor,
     selected: list[ActiveFeature],
     logit_targets: list[LogitTarget],
     n_pos: int,
+    n_error_nodes: int = 0,
 ) -> dict[int, float]:
     """Signed direct logit contribution per selected feature score index."""
 
@@ -673,7 +681,7 @@ def logit_weights_from_dense_matrix(
     for col, feature in enumerate(selected):
         total = 0.0
         for logit_idx, target in enumerate(logit_targets):
-            row = n_selected + n_pos + logit_idx
+            row = n_selected + n_error_nodes + n_pos + logit_idx
             total += float(target.prob) * float(dense_edge_matrix[row, col].item())
         weights[feature.score_index] = total
     return weights
@@ -682,6 +690,7 @@ def logit_weights_from_dense_matrix(
 def dense_edge_matrix_links(
     *,
     selected: list[SelectedFeature],
+    error_nodes: list[ErrorNode] | None = None,
     input_token_ids: list[int],
     logit_targets: list[LogitTarget],
     dense_edge_matrix: torch.Tensor,
@@ -689,6 +698,7 @@ def dense_edge_matrix_links(
     """Translate a packed ``A[target, source]`` matrix into signed links."""
 
     node_ids = [feature.node_id for feature in selected]
+    node_ids.extend(error_node_id(node.layer, node.pos) for node in error_nodes or [])
     node_ids.extend(
         embedding_node_id(vocab_idx, pos) for pos, vocab_idx in enumerate(input_token_ids)
     )
@@ -948,6 +958,7 @@ def prune_edges_by_thresholded_influence(
 def prune_graph_by_indirect_influence(
     *,
     selected: list[SelectedFeature],
+    error_node_ids: list[str] | None = None,
     input_token_ids: list[int],
     links: list[GraphLink],
     logit_targets: list[LogitTarget],
@@ -958,8 +969,9 @@ def prune_graph_by_indirect_influence(
     embedding_ids = [
         embedding_node_id(vocab_idx, pos) for pos, vocab_idx in enumerate(input_token_ids)
     ]
+    error_node_ids = error_node_ids or []
     logit_weights = {target.node_id: target.prob for target in logit_targets}
-    all_node_ids = set(feature_ids) | set(embedding_ids) | set(logit_weights)
+    all_node_ids = set(feature_ids) | set(error_node_ids) | set(embedding_ids) | set(logit_weights)
 
     node_scores = indirect_logit_influence(
         node_ids=all_node_ids,
@@ -972,7 +984,7 @@ def prune_graph_by_indirect_influence(
         feature_ids=feature_ids,
         threshold=node_threshold,
     )
-    kept_node_ids = set(embedding_ids) | set(logit_weights) | kept_feature_ids
+    kept_node_ids = set(error_node_ids) | set(embedding_ids) | set(logit_weights) | kept_feature_ids
 
     node_pruned_links = [
         link for link in links if link.source in kept_node_ids and link.target in kept_node_ids
@@ -1516,6 +1528,7 @@ class BiologyAttributionRunner:
                     f"logit nodes={len(logit_targets)}; "
                     f"active features={ctx.n_features}"
                 )
+                all_error_nodes = error_nodes_for_layers(self.layers, len(input_token_ids))
                 ctx.state.feature_values.clear()
                 ctx.state.transcoders = {}
                 self._offload_transcoders_after_forward()
@@ -1541,6 +1554,7 @@ class BiologyAttributionRunner:
                     selected=active_features,
                     logit_targets=logit_targets,
                     n_pos=len(input_token_ids),
+                    n_error_nodes=len(all_error_nodes),
                 )
                 selected = selected_features_from_active(
                     active_features=active_features,
@@ -1549,6 +1563,7 @@ class BiologyAttributionRunner:
                 )
                 all_links = dense_edge_matrix_links(
                     selected=selected,
+                    error_nodes=all_error_nodes,
                     input_token_ids=input_token_ids,
                     logit_targets=logit_targets,
                     dense_edge_matrix=dense_edge_matrix,
@@ -1560,12 +1575,27 @@ class BiologyAttributionRunner:
             with timed("Anthropic-style graph pruning"):
                 selected, all_links = prune_graph_by_indirect_influence(
                     selected=selected,
+                    error_node_ids=[
+                        error_node_id(node.layer, node.pos) for node in all_error_nodes
+                    ],
                     input_token_ids=input_token_ids,
                     links=all_links,
                     logit_targets=logit_targets,
                     node_threshold=node_threshold,
                     edge_threshold=edge_threshold,
                 )
+                all_error_ids = {error_node_id(node.layer, node.pos) for node in all_error_nodes}
+                linked_error_ids = {
+                    node_id
+                    for link in all_links
+                    for node_id in (link.source, link.target)
+                    if node_id in all_error_ids
+                }
+                error_nodes = [
+                    node
+                    for node in all_error_nodes
+                    if error_node_id(node.layer, node.pos) in linked_error_ids
+                ]
 
             with timed("Per-feature direct-logit projection"), torch.no_grad():
                 feature_logits = compute_feature_logits(
@@ -1595,6 +1625,7 @@ class BiologyAttributionRunner:
                 target_token_id=primary_target.token_id,
                 target_token_str=primary_target.token,
                 target_token_prob=primary_target.prob,
+                error_nodes=error_nodes,
                 logit_nodes=[
                     LogitNode(
                         vocab_idx=target.token_id,
@@ -1627,6 +1658,7 @@ class BiologyAttributionRunner:
                         "selected_features": [
                             selected_feature_to_dict(feature) for feature in selected
                         ],
+                        "error_nodes": [asdict(node) for node in error_nodes],
                         "links": [asdict(link) for link in all_links],
                         "graph_path": str(graph_path),
                     },
@@ -1645,6 +1677,7 @@ class BiologyAttributionRunner:
                 input_token_ids=input_token_ids,
                 selected_features=selected,
                 links=all_links,
+                error_nodes=error_nodes,
                 logit_targets=logit_targets,
                 pt_path=pt_path,
             )

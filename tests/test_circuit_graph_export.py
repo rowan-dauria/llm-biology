@@ -6,10 +6,12 @@ import unittest
 from pathlib import Path
 
 from circuit_graph_export import (
+    ErrorNode,
     FeatureNode,
     GraphLink,
     LogitNode,
     embedding_node_id,
+    error_node_id,
     export_circuit_graph,
     feature_node_id,
     make_feature_example_payload,
@@ -178,6 +180,36 @@ class CircuitGraphExportTests(unittest.TestCase):
             logit_nodes = [node for node in graph["nodes"] if node["feature_type"] == "logit"]
             self.assertEqual([node["node_id"] for node in logit_nodes], ["37_2_0", "37_3_0"])
             self.assertEqual(graph["qParams"]["clickedId"], "37_2_0")
+
+    def test_export_emits_error_nodes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            error_id = error_node_id(2, 1)
+            graph_path = export_circuit_graph(
+                output_dir=Path(tmp),
+                slug="errors",
+                prompt="hi",
+                prompt_tokens=["hi", "!"],
+                input_token_ids=[1, 2],
+                num_layers=36,
+                feature_nodes=[],
+                error_nodes=[ErrorNode(layer=2, pos=1)],
+                links=[
+                    GraphLink(
+                        source=error_id,
+                        target="37_3_1",
+                        weight=0.25,
+                    )
+                ],
+                target_token_id=3,
+                target_token_str=" out",
+                target_token_prob=0.5,
+            )
+
+            graph = json.loads(graph_path.read_text())
+            error_node = next(node for node in graph["nodes"] if node["node_id"] == error_id)
+            self.assertEqual(error_node["feature_type"], "mlp reconstruction error")
+            self.assertEqual(error_node["feature"], -1)
+            self.assertEqual(graph["links"][0]["source"], error_id)
 
     def test_merge_qparams_filters_stale_ids_and_keeps_state(self) -> None:
         existing = {

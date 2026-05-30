@@ -46,7 +46,9 @@ def _dense_positive_transcoder(
         dtype=torch.float32,
     )
     with torch.no_grad():
-        # Every feature is active at every position, giving 4 * 16 = 64
+        # Every unmasked feature is active at every non-prefix position, giving
+        # 3 * 16 = 48 candidate feature nodes with the default zero-position
+        # policy.
         # candidate feature nodes. Decoder rows vary, so logit influence ranks
         # are non-degenerate.
         tc.W_enc.zero_()
@@ -74,7 +76,7 @@ class TestTLTopK(unittest.TestCase):
             logit_targets=logit_targets,
             layers=[0],
         )
-        self.assertGreaterEqual(len(all_features), 50)
+        self.assertGreaterEqual(len(all_features), 40)
 
         n_nodes = full_matrix.shape[0]
         full_influences = compute_partial_influences(
