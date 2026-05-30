@@ -24,6 +24,7 @@ from biology_server.attribution import (
     TokenCandidate,
     _detached_eager_attention_forward,
     _patched_rms_norm_forward,
+    assert_top_token_parity,
     collect_feature_scores,
     dense_edge_matrix_links,
     indirect_logit_influence,
@@ -93,7 +94,12 @@ class FakeRunner:
         graph_file_dir: Path | str | None = None,
         save_pt: str | None = None,
         use_chat_template: bool = True,
+        preview_top_token_id: int | None = None,
+        preview_top_token: str | None = None,
+        preview_top_token_prob: float | None = None,
+        preview_tl_prob_tolerance: float = 0.1,
     ) -> GraphResult:
+        del preview_tl_prob_tolerance
         if self.fail:
             raise RuntimeError("boom")
         self.generate_calls.append(
@@ -108,6 +114,9 @@ class FakeRunner:
                 "max_logit_nodes": max_logit_nodes,
                 "save_pt": save_pt,
                 "use_chat_template": use_chat_template,
+                "preview_top_token_id": preview_top_token_id,
+                "preview_top_token": preview_top_token,
+                "preview_top_token_prob": preview_top_token_prob,
             }
         )
         if graph_file_dir is None:
@@ -449,6 +458,27 @@ class BiologyServerTests(unittest.TestCase):
         )
         self.assertEqual(weights, {0: 0.0})
 
+    def test_top_token_parity_requires_same_top_id_and_close_probability(self) -> None:
+        preview_top = TokenCandidate(token_id=2, token=" world", prob=0.75)
+        assert_top_token_parity(
+            preview_top=preview_top,
+            tl_top=TokenCandidate(token_id=2, token=" world", prob=0.66),
+            prob_tolerance=0.1,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "Preview/TL top-token parity failed"):
+            assert_top_token_parity(
+                preview_top=preview_top,
+                tl_top=TokenCandidate(token_id=3, token=" there", prob=0.75),
+                prob_tolerance=0.1,
+            )
+        with self.assertRaisesRegex(RuntimeError, "Preview/TL top-token parity failed"):
+            assert_top_token_parity(
+                preview_top=preview_top,
+                tl_top=TokenCandidate(token_id=2, token=" world", prob=0.64),
+                prob_tolerance=0.1,
+            )
+
     def test_edge_pruning_uses_target_score_and_preserves_signed_weights(self) -> None:
         links = [
             GraphLink(source="a", target="c", weight=-2.0),
@@ -555,6 +585,10 @@ class BiologyServerTests(unittest.TestCase):
             self.assertEqual(graph["metadata"]["slug"], "demo")
             self.assertFalse(runner.preview_calls[0]["use_chat_template"])
             self.assertFalse(runner.generate_calls[0]["use_chat_template"])
+            self.assertEqual(runner.generate_calls[0]["target_token_id"], 2)
+            self.assertEqual(runner.generate_calls[0]["preview_top_token_id"], 2)
+            self.assertEqual(runner.generate_calls[0]["preview_top_token"], " world")
+            self.assertEqual(runner.generate_calls[0]["preview_top_token_prob"], 0.75)
             self.assertEqual(runner.generate_calls[0]["node_threshold"], 0.7)
             self.assertEqual(runner.generate_calls[0]["edge_threshold"], 0.9)
             self.assertEqual(runner.generate_calls[0]["max_logit_nodes"], 5)

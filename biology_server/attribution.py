@@ -65,6 +65,7 @@ DEFAULT_LOGIT_PROB_THRESHOLD = 0.95
 DEFAULT_MAX_LOGIT_NODES = 4
 DEFAULT_BATCH_SIZE = 128
 DEFAULT_UPDATE_INTERVAL = 1
+DEFAULT_PREVIEW_TL_PROB_TOLERANCE = 0.1
 
 CACHE_DIR = os.getenv("HF_HOME")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -577,6 +578,38 @@ def top_token_candidates(
         TokenCandidate(token_id=tid, token=token, prob=float(prob))
         for prob, tid, token in zip(probs_list, ids_list, tokens, strict=True)
     ]
+
+
+def top_token_candidate(
+    tokenizer: PreTrainedTokenizerBase,
+    last_logits: torch.Tensor,
+) -> TokenCandidate:
+    candidates = top_token_candidates(tokenizer, last_logits, top_k=1)
+    if not candidates:
+        raise RuntimeError("could not select top token from empty logits")
+    return candidates[0]
+
+
+def assert_top_token_parity(
+    *,
+    preview_top: TokenCandidate,
+    tl_top: TokenCandidate,
+    prob_tolerance: float = DEFAULT_PREVIEW_TL_PROB_TOLERANCE,
+) -> None:
+    if prob_tolerance < 0:
+        raise ValueError("prob_tolerance must be non-negative")
+
+    prob_diff = abs(preview_top.prob - tl_top.prob)
+    if preview_top.token_id == tl_top.token_id and prob_diff <= prob_tolerance:
+        return
+
+    raise RuntimeError(
+        "Preview/TL top-token parity failed: "
+        f"preview top id={preview_top.token_id} ({preview_top.token!r}) "
+        f"p={preview_top.prob:.6f}; "
+        f"TL top id={tl_top.token_id} ({tl_top.token!r}) p={tl_top.prob:.6f}; "
+        f"allowed probability difference={prob_tolerance:.3f}"
+    )
 
 
 def select_logit_targets(
@@ -1482,34 +1515,63 @@ class BiologyAttributionRunner:
         graph_file_dir: Path | str | None = None,
         save_pt: str | None = None,
         use_chat_template: bool = True,
+        preview_top_token_id: int | None = None,
+        preview_top_token: str | None = None,
+        preview_top_token_prob: float | None = None,
+        preview_tl_prob_tolerance: float = DEFAULT_PREVIEW_TL_PROB_TOLERANCE,
     ) -> GraphResult:
         """Generate and export a circuit-tracer-compatible graph JSON."""
 
         with self._lock:
-            model, tokenizer, transcoders = self._loaded()
+            self._ensure_loaded(include_transcoders=False)
+            assert self._model is not None
+            assert self._tokenizer is not None
+            model = self._model
+            tokenizer = self._tokenizer
             resolved_slug = slug or slugify(prompt[:50])
-            labels = load_feature_labels(set(self.layers))
-            print(f"[INFO] loaded {len(labels)} feature labels")
             input_ids, input_token_ids, prompt_tokens = self._inputs_for_prompt(
                 tokenizer, prompt, use_chat_template=use_chat_template
             )
 
             from biology_server_t_lens.tl_attribution import (
                 TargetSpec,
+                detached_logits,
                 run_attribution_from_context,
                 setup_attribution,
             )
 
             batch_size = max(self.batch_size, max_logit_nodes)
-            with timed("TL replacement forward pass"):
-                ctx = setup_attribution(
-                    model,
-                    input_ids,
-                    batch_size=batch_size,
-                    transcoders=transcoders,
-                    layers=self.layers,
-                )
-                last_logits = ctx.logits[0, -1]
+            with timed("TL base forward parity check"):
+                base_logits = detached_logits(model, input_ids)
+                last_logits = base_logits[0, -1]
+                tl_top = top_token_candidate(tokenizer, last_logits)
+                if preview_top_token_id is not None or preview_top_token_prob is not None:
+                    if preview_top_token_id is None or preview_top_token_prob is None:
+                        raise ValueError(
+                            "preview_top_token_id and preview_top_token_prob must be provided "
+                            "together"
+                        )
+                    preview_top = TokenCandidate(
+                        token_id=int(preview_top_token_id),
+                        token=(
+                            preview_top_token
+                            if preview_top_token is not None
+                            else tokenizer.decode([int(preview_top_token_id)])
+                        ),
+                        prob=float(preview_top_token_prob),
+                    )
+                    assert_top_token_parity(
+                        preview_top=preview_top,
+                        tl_top=tl_top,
+                        prob_tolerance=preview_tl_prob_tolerance,
+                    )
+                    print(
+                        "[INFO] preview/TL top-token parity ok: "
+                        f"id={tl_top.token_id} ({tl_top.token!r}) "
+                        f"preview_p={preview_top.prob:.4f} tl_p={tl_top.prob:.4f}"
+                    )
+                    if target_token_id is None and target_token is None:
+                        target_token_id = preview_top.token_id
                 logit_targets = select_logit_targets(
                     tokenizer,
                     last_logits,
@@ -1525,9 +1587,26 @@ class BiologyAttributionRunner:
                     f"[INFO] primary logit id={primary_target.token_id} "
                     f"({primary_target.token!r}) p={primary_target.prob:.4f} "
                     f"logit={target_logit.item():.3f}; "
-                    f"logit nodes={len(logit_targets)}; "
-                    f"active features={ctx.n_features}"
+                    f"logit nodes={len(logit_targets)}"
                 )
+
+            self._ensure_loaded(include_transcoders=True)
+            self._ensure_transcoders_on_runner_device()
+            assert self._transcoders is not None
+            transcoders = self._transcoders
+            labels = load_feature_labels(set(self.layers))
+            print(f"[INFO] loaded {len(labels)} feature labels")
+
+            with timed("TL replacement forward pass"):
+                ctx = setup_attribution(
+                    model,
+                    input_ids,
+                    batch_size=batch_size,
+                    transcoders=transcoders,
+                    layers=self.layers,
+                    base_logits=base_logits,
+                )
+                print(f"[INFO] active features={ctx.n_features}")
                 all_error_nodes = error_nodes_for_layers(self.layers, len(input_token_ids))
                 ctx.state.feature_values.clear()
                 ctx.state.transcoders = {}

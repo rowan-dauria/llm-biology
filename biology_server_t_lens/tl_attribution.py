@@ -447,6 +447,7 @@ def setup_attribution(
     transcoders: dict[int, SingleLayerTranscoder],
     layers: Sequence[int],
     zero_positions: slice | None = slice(0, 1),
+    base_logits: torch.Tensor | None = None,
 ) -> AttributionContext:
     """Run one retained forward over an expanded prompt, stopping before unembed.
 
@@ -460,7 +461,7 @@ def setup_attribution(
         input_ids = input_ids.unsqueeze(0)
     if input_ids.shape[0] != 1:
         raise ValueError(f"Expected (1, n_pos) or (n_pos,), got {tuple(input_ids.shape)}")
-    logits = detached_logits(model, input_ids)
+    logits = detached_logits(model, input_ids) if base_logits is None else base_logits.detach()
     expanded = input_ids.expand(batch_size, -1).contiguous()
 
     state = HookState(

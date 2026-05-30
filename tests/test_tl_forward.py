@@ -108,20 +108,20 @@ class TestTLForward(unittest.TestCase):
             # Activations must be positive (post-ReLU).
             self.assertTrue(bool((data.activations > 0).all().item()))
 
-    def test_mlp_out_equals_reconstruction(self):
+    def test_mlp_out_preserves_original_value(self):
         captured: dict[int, torch.Tensor] = {}
         self._forward(capture=captured)
         for layer in self.state.layers:
-            mlp_in = self.state.mlp_inputs[layer]
-            tc = self.transcoders[layer]
-            with torch.no_grad():
-                features = tc.encode(mlp_in)
-                features[:, 0, :] = 0
-                expected = tc.decode(features.to(tc.W_dec.dtype), None).to(captured[layer].dtype)
+            expected = self.state.original_mlp_outputs[layer].unsqueeze(0)
+            max_delta = (captured[layer] - expected).abs().max().item()
             self.assertTrue(
-                torch.allclose(captured[layer], expected, atol=1e-5, rtol=1e-5),
-                f"layer {layer}: mlp_out != transcoder reconstruction "
-                f"(max |Δ|={(captured[layer] - expected).abs().max().item():.3e})",
+                torch.allclose(
+                    captured[layer],
+                    expected,
+                    atol=1e-5,
+                    rtol=1e-5,
+                ),
+                f"layer {layer}: mlp_out did not preserve original value (max |Δ|={max_delta:.3e})",
             )
 
     def test_feature_and_error_caches_zero_prefix_position(self):
