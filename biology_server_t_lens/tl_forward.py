@@ -20,6 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import torch
+import torch.nn as nn
 from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTranscoder
 from transformer_lens import HookedTransformer
 from transformer_lens.hook_points import HookPoint
@@ -33,6 +34,8 @@ __all__ = [
     "FwdHook",
     "HookState",
     "LayerFeatureData",
+    "ReplacementMLP",
+    "ensure_replacement_mlp_hooks",
     "finalize_active_features",
     "install_transcoder_hooks",
     "layer_feature_data",
@@ -80,6 +83,47 @@ class HookState:
         self.embedding_grad = None
         if self.embedding is not None and self.embedding.grad is not None:
             self.embedding.grad = None
+
+
+class ReplacementMLP(nn.Module):
+    """Wrap a TL MLP with circuit-tracer-style input/output hook points."""
+
+    def __init__(self, old_mlp: nn.Module) -> None:
+        super().__init__()
+        self.old_mlp = old_mlp
+        self.hook_in = HookPoint()
+        self.hook_out = HookPoint()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.hook_in(x)
+        mlp_out = self.old_mlp(x)
+        return self.hook_out(mlp_out)
+
+
+def _has_replacement_hooks(mlp: nn.Module) -> bool:
+    return isinstance(mlp, ReplacementMLP) or (
+        isinstance(getattr(mlp, "hook_in", None), HookPoint)
+        and isinstance(getattr(mlp, "hook_out", None), HookPoint)
+    )
+
+
+def ensure_replacement_mlp_hooks(model: HookedTransformer, layers: list[int]) -> None:
+    """Expose post-LN MLP input/output hook points for tracked layers.
+
+    TransformerLens' built-in ``blocks.{l}.hook_mlp_in`` sits before ``ln2``.
+    Circuit-tracer's ``ReplacementMLP.hook_in`` sits on the tensor actually fed
+    to the MLP, after ``ln2`` and its learned weight.
+    """
+
+    wrapped_any = False
+    for layer in layers:
+        block = model.blocks[layer]
+        if _has_replacement_hooks(block.mlp):
+            continue
+        block.mlp = ReplacementMLP(block.mlp)
+        wrapped_any = True
+    if wrapped_any:
+        model.setup()
 
 
 def finalize_active_features(state: HookState) -> list[ActiveFeature]:
@@ -208,15 +252,21 @@ def install_transcoder_hooks(
     :func:`install_freezes`; these per-forward hooks should be wrapped by a
     ``model.hooks(...)`` context manager so they auto-clean between requests.)
     """
+    ensure_replacement_mlp_hooks(model, state.layers)
+
     fwd_hooks: list[FwdHook] = []
     for layer in state.layers:
         if layer not in transcoders:
             raise KeyError(f"No transcoder provided for tracked layer {layer}")
-        # MLP input = LN-normalised resid_mid (what the MLP weights actually
-        # receive). This is also what the transcoders were trained on.
-        fwd_hooks.append((f"blocks.{layer}.ln2.hook_normalized", _make_mlp_in_hook(layer, state)))
+        # MLP input = the post-ln2 tensor actually fed to the MLP. This matches
+        # circuit-tracer's ReplacementMLP.hook_in and the Qwen3 transcoder space.
+        fwd_hooks.append((f"blocks.{layer}.mlp.hook_in", _make_mlp_in_hook(layer, state)))
+        # Keep the replacement at the block output hook so it composes with the
+        # existing permanent MLP-output freeze installed in ``tl_freeze``.
         fwd_hooks.append((f"blocks.{layer}.hook_mlp_out", _make_mlp_out_hook(layer, state)))
 
     fwd_hooks.append(("hook_embed", _make_embed_hook(state)))
-    fwd_hooks.append(("ln_final.hook_normalized", _make_final_hidden_hook(state)))
+    # In a full serial forward, this is the post-final-norm residual that the
+    # unembed reads. Batched setup stops before unembed and sets this manually.
+    fwd_hooks.append(("unembed.hook_in", _make_final_hidden_hook(state)))
     return fwd_hooks

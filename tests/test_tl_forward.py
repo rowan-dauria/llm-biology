@@ -123,6 +123,68 @@ class TestTLForward(unittest.TestCase):
                 f"(max |Δ|={(captured[layer] - expected).abs().max().item():.3e})",
             )
 
+    def test_mlp_input_is_post_ln2_weighted_tensor(self):
+        for layer in self.state.layers:
+            with torch.no_grad():
+                self.model.blocks[layer].ln2.w.copy_(
+                    torch.linspace(0.5, 1.5, self.model.cfg.d_model)
+                )
+
+        normalized: dict[int, torch.Tensor] = {}
+        fwd_hooks = install_transcoder_hooks(self.model, self.transcoders, self.state)
+        for layer in self.state.layers:
+
+            def probe(acts: torch.Tensor, hook, layer=layer) -> torch.Tensor:  # noqa: ARG001
+                normalized[layer] = acts.detach().clone()
+                return acts
+
+            fwd_hooks.append((f"blocks.{layer}.ln2.hook_normalized", probe))
+
+        self.model.run_with_hooks(self.tokens, fwd_hooks=fwd_hooks)
+
+        for layer in self.state.layers:
+            ln_weight = self.model.blocks[layer].ln2.w
+            expected = normalized[layer] * ln_weight
+            got = self.state.mlp_inputs[layer]
+            self.assertTrue(
+                torch.allclose(got, expected, atol=1e-5, rtol=1e-5),
+                f"layer {layer}: mlp input was not the post-ln2 weighted tensor",
+            )
+            self.assertFalse(
+                torch.allclose(got, normalized[layer], atol=1e-5, rtol=1e-5),
+                f"layer {layer}: mlp input still matches pre-weight hook_normalized",
+            )
+
+    def test_final_hidden_is_post_final_norm_unembed_input(self):
+        with torch.no_grad():
+            self.model.ln_final.w.copy_(torch.linspace(0.5, 1.5, self.model.cfg.d_model))
+
+        normalized: dict[str, torch.Tensor] = {}
+        unembed_input: dict[str, torch.Tensor] = {}
+        fwd_hooks = install_transcoder_hooks(self.model, self.transcoders, self.state)
+
+        def capture_normalized(acts: torch.Tensor, hook) -> torch.Tensor:  # noqa: ARG001
+            normalized["value"] = acts.detach().clone()
+            return acts
+
+        def capture_unembed_input(acts: torch.Tensor, hook) -> torch.Tensor:  # noqa: ARG001
+            unembed_input["value"] = acts.detach().clone()
+            return acts
+
+        fwd_hooks.extend(
+            [
+                ("ln_final.hook_normalized", capture_normalized),
+                ("unembed.hook_in", capture_unembed_input),
+            ]
+        )
+        self.model.run_with_hooks(self.tokens, fwd_hooks=fwd_hooks)
+
+        assert self.state.final_hidden is not None
+        expected = normalized["value"] * self.model.ln_final.w
+        self.assertTrue(torch.allclose(self.state.final_hidden, unembed_input["value"]))
+        self.assertTrue(torch.allclose(self.state.final_hidden, expected, atol=1e-5, rtol=1e-5))
+        self.assertFalse(torch.allclose(self.state.final_hidden, normalized["value"]))
+
     def test_backward_populates_grads(self):
         self._forward()
         final_hidden = self.state.final_hidden
