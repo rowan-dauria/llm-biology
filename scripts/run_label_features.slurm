@@ -1,6 +1,6 @@
 #!/bin/bash
 #!
-#! SLURM array job: label features per layer with Gemma 4 E4B in transformers.
+#! SLURM array job: label features per layer with Gemma 3 12B in transformers.
 #! Each array task picks one layer from LAYERS, runs label_features.py against
 #! the corresponding topk_layer_*.pt, and writes data/feature_labels/layer_<L>.jsonl.
 #!
@@ -21,6 +21,14 @@
 #SBATCH -p ampere
 
 #! sbatch directives end here
+
+# ============
+# How many LLMs to label features in parallel
+CONCURRENCY=6
+# LLM to use for labelling
+MODEL="google/gemma-3-12b-it"
+# ============
+
 
 numnodes=$SLURM_JOB_NUM_NODES
 numtasks=$SLURM_NTASKS
@@ -80,6 +88,7 @@ echo -e "\nnumtasks=$numtasks, numnodes=$numnodes, mpi_tasks_per_node=$mpi_tasks
 
 srun python -u "$PROJECT_ROOT/feature_lookup/label_features.py" \
     --layer "$LAYER" \
+    --topk-dir "$PROJECT_ROOT/data/feature_topk/150k-pile" \
     --provider transformers \
-    --model google/gemma-4-E4B-it \
-    --concurrency 8
+    --model "$MODEL" \
+    --concurrency $CONCURRENCY
