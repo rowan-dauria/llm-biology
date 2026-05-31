@@ -48,7 +48,7 @@ DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_OLLAMA_MODEL = "qwen3:4b"
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
-DEFAULT_TRANSFORMERS_MODEL = "google/gemma-4-E4B-it"
+DEFAULT_TRANSFORMERS_MODEL = "google/gemma-3-12b-it"
 DEFAULT_MAX_NEW_TOKENS = 256
 
 SYSTEM_PROMPT = """You are explaining the behavior of a neuron in a neural network. Your response should be a very concise explanation (1-6 words) that captures what the neuron detects or predicts by finding patterns in lists.
