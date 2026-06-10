@@ -113,7 +113,6 @@ def log_environment() -> None:
 def parse_args() -> argparse.Namespace:
     # Imported lazily so --help works even if heavy deps are missing.
     from biology_server.attribution import (
-        DEFAULT_BATCH_SIZE,
         DEFAULT_EDGE_THRESHOLD,
         DEFAULT_LAYERS,
         DEFAULT_LOGIT_PROB_THRESHOLD,
@@ -150,7 +149,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-token-id", type=int, default=None)
     # Matches the notebook's A100 settings (BATCH_SIZE=32, MAX_FEATURE_NODES=3000).
     parser.add_argument("--max-feature-nodes", type=int, default=3000)
-    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--node-threshold", type=float, default=DEFAULT_NODE_THRESHOLD)
     parser.add_argument("--edge-threshold", type=float, default=DEFAULT_EDGE_THRESHOLD)
     parser.add_argument("--logit-prob-threshold", type=float, default=DEFAULT_LOGIT_PROB_THRESHOLD)
