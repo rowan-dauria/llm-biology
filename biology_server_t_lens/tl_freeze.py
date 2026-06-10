@@ -49,9 +49,12 @@ def install_freezes(model: HookedTransformer) -> None:
         return
 
     for block in model.blocks:
+        # stop gradients passing through attention
         block.attn.hook_pattern.add_hook(_stop_gradient, is_permanent=True)
+        # stop gradients passing through layernorms
         for scale_hook in _scale_hook_points(block):
             scale_hook.add_hook(_stop_gradient, is_permanent=True)
+        # stop gradients through the mlp block
         block.hook_mlp_out.add_hook(_stop_gradient, is_permanent=True)
 
     final_scale = getattr(model.ln_final, "hook_scale", None)

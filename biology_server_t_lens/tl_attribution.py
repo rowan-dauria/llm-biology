@@ -177,7 +177,7 @@ def collect_embedding_scores(state: HookState, *, batch_index: int = 0) -> torch
 
 
 def detached_logits(model: HookedTransformer, input_ids: torch.Tensor) -> torch.Tensor:
-    """Compute logits for target selection without retaining an attribution graph."""
+    """Do a forward pass of the transcoder-subbed model and return the output logits"""
 
     with torch.no_grad():
         return model(input_ids).detach()
@@ -349,8 +349,7 @@ class AttributionContext:
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Attribute up to ``batch_size`` targets in one backward.
 
-        Single-backward mechanic (matches circuit-tracer's
-        ``AttributionContext.compute_batch``):
+        Single-backward mechanic:
 
         - ``_make_mlp_out_hook`` wraps each tracked layer's MLP output as
           ``mlp_input * 0 + reconstruction.detach()``. The ``* 0`` keeps

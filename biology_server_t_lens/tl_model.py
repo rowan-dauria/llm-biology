@@ -3,7 +3,7 @@
 Wraps ``HookedTransformer.from_pretrained`` with the freeze settings the
 biology_server attribution backend needs: ``fold_ln=False``,
 ``center_writing_weights=False``, ``center_unembed=False`` so unembed-vector
-injection and residual interpretation line up with the un-folded model. Then
+injection and residual stream line up with the transcoders expect. Then
 applies :func:`install_freezes` so backward is linear.
 """
 
@@ -32,7 +32,12 @@ def load_replacement_model(
     ``HookedTransformer`` ignoring it — set ``HF_HOME`` in the environment for
     true cache control. Accepted here for symmetry with the legacy backend.
     """
+
     kwargs: dict = {
+        # see https://transformer-circuits.pub/2021/framework/index.html#:~:text=Handling%20Layer%20Normalization
+        # these settings can be used to make the model more interpretable, but the we need to disable
+        # them because they would change the residual stream input to the transcoders, which would change the
+        # behaviour of the replacement model.
         "fold_ln": False,
         "center_writing_weights": False,
         "center_unembed": False,

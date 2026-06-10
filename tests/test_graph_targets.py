@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import cast
 
 from feature_lookup.graph_targets import (
     compute_centrality,
@@ -163,7 +164,7 @@ class SelectTargetsTests(unittest.TestCase):
         # "[?] ..." placeholder clerp (labelled after this graph was built).
         # It must be selected so patch_graph can refresh the clerp.
         graph = self._build_synthetic_graph()
-        for node in graph["nodes"]:
+        for node in cast(list[dict[str, object]], graph["nodes"]):
             if node.get("node_id") == "12_500_3":
                 node["clerp"] = "[?] L12 F500"
         with tempfile.TemporaryDirectory() as tmp:

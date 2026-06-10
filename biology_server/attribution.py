@@ -1518,6 +1518,8 @@ class BiologyAttributionRunner:
     ) -> PreviewResult:
         """Run a lightweight inference forward and return the default next-token target."""
 
+        # use thread lockig to prevent multiple simultaneous preview requests from attempting
+        # to load multiple models and running out of memory
         with self._lock:
             memory_checkpoint("preview:start")
             model, tokenizer = self._loaded_for_preview()
@@ -1583,6 +1585,8 @@ class BiologyAttributionRunner:
     ) -> GraphResult:
         """Generate and export a circuit-tracer-compatible graph JSON."""
 
+        # use thread locking to prevent multiple simultaneous preview requests from attempting
+        # to load multiple models and running out of memory
         with self._lock:
             self._ensure_loaded(include_transcoders=False)
             assert self._model is not None
@@ -1603,7 +1607,7 @@ class BiologyAttributionRunner:
 
             batch_size = max(self.batch_size, max_logit_nodes)
             with timed("TL base forward parity check"):
-                base_logits = detached_logits(model, input_ids)
+                base_logits = detached_logits(model, input_ids)  # forward pass for output logits
                 last_logits = base_logits[0, -1]
                 tl_top = top_token_candidate(tokenizer, last_logits)
                 if preview_top_token_id is not None or preview_top_token_prob is not None:
@@ -1614,6 +1618,7 @@ class BiologyAttributionRunner:
                         )
                     preview_top = TokenCandidate(
                         token_id=int(preview_top_token_id),
+                        # TODO: remove these fallbacks?
                         token=(
                             preview_top_token
                             if preview_top_token is not None
@@ -1621,6 +1626,8 @@ class BiologyAttributionRunner:
                         ),
                         prob=float(preview_top_token_prob),
                     )
+                    # check the transcoder model logit predictions match base model within a
+                    # tolerance
                     assert_top_token_parity(
                         preview_top=preview_top,
                         tl_top=tl_top,
