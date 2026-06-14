@@ -25,7 +25,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 LOGGER = logging.getLogger("sweep_supernode_interventions")
-DEFAULT_MAGNITUDES = "-2,-1,0,0.5,1,2,4,8"
+DEFAULT_MAGNITUDES = "-2,-1,0,0.5,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7,7.5,8"
 
 
 def _apply_circuit_tracer_shim() -> None:
