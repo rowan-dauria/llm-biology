@@ -67,6 +67,10 @@ workdir="/home/rd761/mphil-project/llm-biology"
 #! safe value to no more than 128:
 export OMP_NUM_THREADS=1
 
+while [ "$#" -gt 0 ] && [ -z "${1//[[:space:]]/}" ]; do
+        shift
+done
+
 GRAPH_JSON="${1:-${GRAPH_JSON:-}}"
 SUPERNODE="${2:-${SUPERNODE:-}}"
 MAGNITUDES="${MAGNITUDES:--2,-1,0,0.5,1,2,4,8}"
