@@ -82,6 +82,25 @@ sbatch scripts/bootstrap_random_supernode_baseline.wilkes3 <graph.json> "<Supern
 #   EXTRA_ARGS='--sampling global-active'   # or --match-magnitude-tol 1.0, --layers ...
 ```
 
+**Per-cell decomposition** — to show which `(layer, pos)` cell drives the
+baseline's variance, restrict the run (targeted sub-sweep *and* baseline draws)
+to a subset of the supernode's cells with `--restrict-cells`. `clean_prob` stays
+the full-model value, so the outputs overlay directly on the full run. Submit one
+job per cell group and compare the bands; the high-leverage final-layer/target
+cell typically reproduces nearly the whole band, the rest a thin one:
+
+```bash
+# final transcoder layer at the target position (the 5 Texas features there):
+EXTRA_ARGS='--restrict-cells 33_10' sbatch \
+  scripts/bootstrap_random_supernode_baseline.wilkes3 <graph.json> Texas
+# the remaining cells:
+EXTRA_ARGS='--restrict-cells 12_9,24_9,24_10' sbatch \
+  scripts/bootstrap_random_supernode_baseline.wilkes3 <graph.json> Texas
+```
+
+Cells are `layer_pos` tokens; output filenames gain a `__cells-…__` tag so the
+runs don't collide.
+
 Both wrappers default to `MAGNITUDES='-2,-1,0,0.5,1,1.5,...,8'` (0.5 steps over
 0–8, plus −1 and −2); the supernode label
 must match a `qParams.supernodes` entry exactly (case-insensitive). Run either

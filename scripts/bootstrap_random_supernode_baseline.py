@@ -61,6 +61,23 @@ PERCENTILES = (5, 25, 50, 75, 95)
 FeatureKey = tuple[int, int, int]
 
 
+def parse_cell_tokens(raw: str) -> set[tuple[int, int]]:
+    """Parse comma-separated ``layer_pos`` cell tokens (e.g. ``"33_10,24_9"``)."""
+    cells: set[tuple[int, int]] = set()
+    for item in raw.split(","):
+        token = item.strip()
+        if not token:
+            continue
+        parts = token.split("_")
+        if len(parts) != 2:
+            raise ValueError(f"not a layer_pos cell token: {token!r}")
+        layer, pos = (int(part) for part in parts)
+        cells.add((layer, pos))
+    if not cells:
+        raise ValueError("expected at least one layer_pos cell token")
+    return cells
+
+
 def capture_clean_features(
     model: Any,
     transcoders: dict[int, Any],
@@ -317,12 +334,15 @@ def aggregate(targeted_value: float, samples: list[float]) -> dict[str, Any]:
     }
 
 
-def default_output_path(graph_path: Path, supernode_name: str) -> Path:
+def default_output_path(graph_path: Path, supernode_name: str, tag: str | None = None) -> Path:
     from biology_server.attribution import slugify
 
     stamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     name = slugify(supernode_name)
-    return graph_path.parent / f"{graph_path.stem}__{name}__baseline-bootstrap__{stamp}.json"
+    suffix = f"__{tag}" if tag else ""
+    return (
+        graph_path.parent / f"{graph_path.stem}__{name}__baseline-bootstrap{suffix}__{stamp}.json"
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -331,6 +351,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("supernode", help="Exact qParams supernode label to baseline.")
     parser.add_argument("--magnitudes", default=DEFAULT_MAGNITUDES)
     parser.add_argument("--layers", default=None, help="Comma-separated tracked layers.")
+    parser.add_argument(
+        "--restrict-cells",
+        default=None,
+        help=(
+            "Comma-separated layer_pos cells (e.g. '33_10' or '12_9,24_9,24_10') to "
+            "isolate for a per-cell decomposition: only the supernode constituents in "
+            "these cells are steered, and baseline draws match only that sub-footprint."
+        ),
+    )
     parser.add_argument(
         "-n",
         "--n-bootstrap",
@@ -407,6 +436,27 @@ def main() -> None:
         constituent_keys.append((layer, pos, feature))
     if not constituent_keys:
         raise ValueError(f"supernode {supernode_label!r} contains no feature nodes")
+
+    restrict_cells: list[str] | None = None
+    if args.restrict_cells is not None:
+        keep = parse_cell_tokens(args.restrict_cells)
+        all_cells = {(layer, pos) for layer, pos, _feature in constituent_keys}
+        unknown = sorted(keep - all_cells)
+        if unknown:
+            available = sorted(f"{c[0]}_{c[1]}" for c in all_cells)
+            raise ValueError(
+                f"--restrict-cells contains cells not in supernode {supernode_label!r}: "
+                f"{[f'{c[0]}_{c[1]}' for c in unknown]}; available: {available}"
+            )
+        n_full = len(constituent_keys)
+        constituent_keys = [k for k in constituent_keys if (k[0], k[1]) in keep]
+        restrict_cells = sorted(f"{c[0]}_{c[1]}" for c in keep)
+        LOGGER.info(
+            "restrict-cells %s: keeping %d/%d constituents",
+            restrict_cells,
+            len(constituent_keys),
+            n_full,
+        )
 
     cells = {(layer, pos) for layer, pos, _feature in constituent_keys}
     if args.layers is None:
@@ -526,8 +576,11 @@ def main() -> None:
         )
 
     target_token = tokenizer.decode([resolved_token_id])
+    tag = ("cells-" + "-".join(restrict_cells)) if restrict_cells else None
     out_path = (
-        (args.output or default_output_path(graph_path, supernode_label)).expanduser().resolve()
+        (args.output or default_output_path(graph_path, supernode_label, tag))
+        .expanduser()
+        .resolve()
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     output = {
@@ -540,6 +593,7 @@ def main() -> None:
             "supernode_size": len(constituent_keys),
             "constituent_node_ids": raw_node_ids,
             "cells": sorted(f"{layer}_{pos}" for layer, pos in cells),
+            "restrict_cells": restrict_cells,
             "layers": layers,
             "magnitudes": magnitudes,
             "n_bootstrap": args.n_bootstrap,
