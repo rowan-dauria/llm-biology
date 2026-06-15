@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from circuit_graph_export import (
+from biology_server.circuit_graph_export import (
     ErrorNode,
     FeatureNode,
     GraphLink,

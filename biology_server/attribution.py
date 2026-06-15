@@ -31,12 +31,7 @@ from transformers.masking_utils import ALL_MASK_ATTENTION_FUNCTIONS, eager_mask
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 from transformers.models.qwen3.modeling_qwen3 import Qwen3RMSNorm, repeat_kv
 
-from biology_server_t_lens.memory_profile import (
-    memory_checkpoint,
-    memory_profile_call,
-    memory_scope,
-)
-from circuit_graph_export import (
+from biology_server.circuit_graph_export import (
     ErrorNode,
     FeatureNode,
     GraphLink,
@@ -48,6 +43,11 @@ from circuit_graph_export import (
     logit_node_id,
     make_feature_example_payload,
     paired_feature_index,
+)
+from biology_server_t_lens.memory_profile import (
+    memory_checkpoint,
+    memory_profile_call,
+    memory_scope,
 )
 from feature_lookup.labels import FeatureLabelMap, get_feature_label, load_feature_labels
 from feature_lookup.windows import active_prompt_ids, collect_prompt_texts, get_windows

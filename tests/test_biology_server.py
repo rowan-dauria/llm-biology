@@ -36,8 +36,13 @@ from biology_server.attribution import (
     row_links,
     select_logit_targets,
 )
+from biology_server.circuit_graph_export import (
+    ErrorNode,
+    embedding_node_id,
+    error_node_id,
+    logit_node_id,
+)
 from biology_server.server import serve
-from circuit_graph_export import ErrorNode, embedding_node_id, error_node_id, logit_node_id
 
 
 class TinyTokenizer:

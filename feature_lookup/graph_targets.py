@@ -1,6 +1,6 @@
 """Pick unlabelled ``(layer, feature)`` targets from an attribution graph.
 
-Reads a frontend graph JSON written by ``circuit_graph_export.export_circuit_graph``,
+Reads a frontend graph JSON written by ``biology_server.circuit_graph_export.export_circuit_graph``,
 joins against the per-layer labels store, and ranks the transcoder feature nodes
 that still need attention — those absent from the store, or whose baked-in
 ``clerp`` is still a ``[?] ...`` placeholder — by ``alpha * abs(target-logit
@@ -171,9 +171,7 @@ def select_unlabeled_targets(
     centrality_map = compute_centrality(grouped.keys(), links)
 
     candidates = [
-        (key, info)
-        for key, info in grouped.items()
-        if key not in labels or key in placeholder_keys
+        (key, info) for key, info in grouped.items() if key not in labels or key in placeholder_keys
     ]
     if not candidates:
         return []

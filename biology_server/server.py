@@ -38,7 +38,7 @@ from biology_server.attribution import (
     parse_layers,
     slugify,
 )
-from circuit_graph_export import write_graph_metadata
+from biology_server.circuit_graph_export import write_graph_metadata
 
 logger = logging.getLogger(__name__)
 logger.propagate = False
