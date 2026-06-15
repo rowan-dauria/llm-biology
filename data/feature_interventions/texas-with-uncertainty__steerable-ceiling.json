@@ -1,0 +1,300 @@
+{
+  "metadata": {
+    "created_at": "2026-06-15T22:11:59",
+    "graph": "/home/rd761/mphil-project/llm-biology/data/ui_graphs/2026-06-10-15-29-17-dallas-with-texas-uncertainty-node.json",
+    "graph_slug": "2026-06-10-15-29-17-fact-the-capital-of-the-state-containing-dallas-i",
+    "prompt": "Fact: the capital of the state containing Dallas is",
+    "supernode": "Texas",
+    "constituent_node_ids": [
+      "33_74861_10",
+      "12_62706_9",
+      "24_92342_10",
+      "33_140757_10",
+      "33_49996_10",
+      "33_4561_10",
+      "24_103864_9",
+      "33_140835_10",
+      "33_135058_10"
+    ],
+    "skipped_node_ids": [],
+    "cells": [
+      "12_9",
+      "24_9",
+      "24_10",
+      "33_10"
+    ],
+    "layers": [
+      2,
+      12,
+      24,
+      33
+    ],
+    "model_id": "Qwen/Qwen3-4B",
+    "device": "cuda",
+    "dtype": "torch.bfloat16",
+    "noop_freeze_drift": 0.125,
+    "elapsed_seconds": 5.581456661224365
+  },
+  "target": {
+    "token_id": 19260,
+    "token": " Austin",
+    "pos": 10,
+    "clean_logit": 20.75,
+    "clean_prob": 0.9394612312316895,
+    "clean_odds": 15.518340566639624
+  },
+  "steerable_ceiling": {
+    "_doc": "read-off: direct logit mass a*g of tracked features (no perturbation)",
+    "const_background_logit": 21.38232421875,
+    "total_mass_all_tracked": -0.63232421875,
+    "total_mass_target_pos": 0.7720947265625,
+    "target_pos_mass_share": -1.221042471042471,
+    "supernode_direct_mass": 0.1386852264404297,
+    "supernode_mass_share": -0.21932613416988417,
+    "verification_residual_logit": -0.00732421875
+  },
+  "max_destruction": {
+    "_doc": "intervention: target prob after zeroing features",
+    "background_all_tracked": {
+      "prob": 0.8228469491004944,
+      "logit": 21.375,
+      "odds": 4.644836455948333
+    },
+    "background_target_pos_only": {
+      "prob": 0.7960898876190186,
+      "logit": 20.0,
+      "odds": 3.904121665783895
+    },
+    "supernode_ablated": {
+      "prob": 0.9287118911743164,
+      "logit": 20.75,
+      "odds": 13.02758491525197
+    },
+    "tracked_control_prob": 0.11661428213119507,
+    "supernode_control_prob": 0.010749340057373047,
+    "supernode_control_share": 0.09217858962832418
+  },
+  "verdict": "SUPERNODE-INCOMPLETE: the tracked features control the prediction, but this supernode owns only a small share of that control. Weakness is about the supernode definition, not (only) coverage \u2014 more layers may add the missing constituents.",
+  "top_direct_contributors": [
+    {
+      "node_id": "33_136169_10",
+      "layer": 33,
+      "pos": 10,
+      "feature": 136169,
+      "label": "Giveaway promotions",
+      "clean_activation": 16.875,
+      "coeff_g": 0.061767578125,
+      "direct_logit_mass": 1.042327880859375,
+      "is_constituent": false
+    },
+    {
+      "node_id": "33_99786_10",
+      "layer": 33,
+      "pos": 10,
+      "feature": 99786,
+      "label": "Geographic locations",
+      "clean_activation": 39.25,
+      "coeff_g": 0.0191650390625,
+      "direct_logit_mass": 0.752227783203125,
+      "is_constituent": false
+    },
+    {
+      "node_id": "33_135058_10",
+      "layer": 33,
+      "pos": 10,
+      "feature": 135058,
+      "label": "Location and proximity",
+      "clean_activation": 24.5,
+      "coeff_g": -0.0220947265625,
+      "direct_logit_mass": -0.54132080078125,
+      "is_constituent": true
+    },
+    {
+      "node_id": "33_140757_10",
+      "layer": 33,
+      "pos": 10,
+      "feature": 140757,
+      "label": "Prepositions of location",
+      "clean_activation": 43.25,
+      "coeff_g": 0.01123046875,
+      "direct_logit_mass": 0.4857177734375,
+      "is_constituent": true
+    },
+    {
+      "node_id": "33_143078_10",
+      "layer": 33,
+      "pos": 10,
+      "feature": 143078,
+      "label": "Prepositional phrase detection",
+      "clean_activation": 86.0,
+      "coeff_g": -0.00482177734375,
+      "direct_logit_mass": -0.4146728515625,
+      "is_constituent": false
+    },
+    {
+      "node_id": "24_30233_10",
+      "layer": 24,
+      "pos": 10,
+      "feature": 30233,
+      "label": "Names and titles",
+      "clean_activation": 13.4375,
+      "coeff_g": -0.01422119140625,
+      "direct_logit_mass": -0.19109725952148438,
+      "is_constituent": false
+    },
+    {
+      "node_id": "33_32521_10",
+      "layer": 33,
+      "pos": 10,
+      "feature": 32521,
+      "label": "State capital locations",
+      "clean_activation": 14.4375,
+      "coeff_g": 0.0126953125,
+      "direct_logit_mass": 0.18328857421875,
+      "is_constituent": false
+    },
+    {
+      "node_id": "33_49996_10",
+      "layer": 33,
+      "pos": 10,
+      "feature": 49996,
+      "label": "Location",
+      "clean_activation": 22.875,
+      "coeff_g": 0.004974365234375,
+      "direct_logit_mass": 0.11378860473632812,
+      "is_constituent": true
+    },
+    {
+      "node_id": "33_149604_10",
+      "layer": 33,
+      "pos": 10,
+      "feature": 149604,
+      "label": "Prepositions and punctuation",
+      "clean_activation": 10.625,
+      "coeff_g": -0.00994873046875,
+      "direct_logit_mass": -0.10570526123046875,
+      "is_constituent": false
+    },
+    {
+      "node_id": "24_106340_10",
+      "layer": 24,
+      "pos": 10,
+      "feature": 106340,
+      "label": "Software development terms",
+      "clean_activation": 6.71875,
+      "coeff_g": -0.014892578125,
+      "direct_logit_mass": -0.10005950927734375,
+      "is_constituent": false
+    },
+    {
+      "node_id": "33_137924_10",
+      "layer": 33,
+      "pos": 10,
+      "feature": 137924,
+      "label": "University of Texas",
+      "clean_activation": 6.5625,
+      "coeff_g": 0.01458740234375,
+      "direct_logit_mass": 0.09572982788085938,
+      "is_constituent": false
+    },
+    {
+      "node_id": "33_102832_10",
+      "layer": 33,
+      "pos": 10,
+      "feature": 102832,
+      "label": "Government officials",
+      "clean_activation": 2.984375,
+      "coeff_g": -0.03173828125,
+      "direct_logit_mass": -0.09471893310546875,
+      "is_constituent": false
+    },
+    {
+      "node_id": "33_22014_10",
+      "layer": 33,
+      "pos": 10,
+      "feature": 22014,
+      "label": "The state",
+      "clean_activation": 15.0625,
+      "coeff_g": -0.0059814453125,
+      "direct_logit_mass": -0.09009552001953125,
+      "is_constituent": false
+    },
+    {
+      "node_id": "33_137531_10",
+      "layer": 33,
+      "pos": 10,
+      "feature": 137531,
+      "label": "forms of 'be'",
+      "clean_activation": 16.75,
+      "coeff_g": -0.005096435546875,
+      "direct_logit_mass": -0.08536529541015625,
+      "is_constituent": false
+    },
+    {
+      "node_id": "33_45350_10",
+      "layer": 33,
+      "pos": 10,
+      "feature": 45350,
+      "label": "Prepositions and punctuation",
+      "clean_activation": 6.96875,
+      "coeff_g": -0.0120849609375,
+      "direct_logit_mass": -0.08421707153320312,
+      "is_constituent": false
+    },
+    {
+      "node_id": "33_153241_10",
+      "layer": 33,
+      "pos": 10,
+      "feature": 153241,
+      "label": "Mathematical expressions",
+      "clean_activation": 29.25,
+      "coeff_g": -0.002655029296875,
+      "direct_logit_mass": -0.07765960693359375,
+      "is_constituent": false
+    },
+    {
+      "node_id": "24_158637_10",
+      "layer": 24,
+      "pos": 10,
+      "feature": 158637,
+      "label": "mandamus",
+      "clean_activation": 5.15625,
+      "coeff_g": 0.01397705078125,
+      "direct_logit_mass": 0.07206916809082031,
+      "is_constituent": false
+    },
+    {
+      "node_id": "24_80022_10",
+      "layer": 24,
+      "pos": 10,
+      "feature": 80022,
+      "label": "Capital city is",
+      "clean_activation": 4.375,
+      "coeff_g": -0.016357421875,
+      "direct_logit_mass": -0.071563720703125,
+      "is_constituent": false
+    },
+    {
+      "node_id": "24_101883_10",
+      "layer": 24,
+      "pos": 10,
+      "feature": 101883,
+      "label": "Numbers and symbols",
+      "clean_activation": 4.9375,
+      "coeff_g": -0.01416015625,
+      "direct_logit_mass": -0.069915771484375,
+      "is_constituent": false
+    },
+    {
+      "node_id": "33_4561_10",
+      "layer": 33,
+      "pos": 10,
+      "feature": 4561,
+      "label": "Texas locations",
+      "clean_activation": 5.96875,
+      "coeff_g": 0.010986328125,
+      "direct_logit_mass": 0.06557464599609375,
+      "is_constituent": true
+    }
+  ]
+}
