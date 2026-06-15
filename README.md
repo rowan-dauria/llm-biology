@@ -101,6 +101,34 @@ EXTRA_ARGS='--restrict-cells 12_9,24_9,24_10' sbatch \
 Cells are `layer_pos` tokens; output filenames gain a `__cells-…__` tag so the
 runs don't collide.
 
+**Steerable ceiling (layer-coverage diagnostic)** — to test whether an
+underwhelming intervention is just a consequence of the small tracked-layer
+subset, this measures how much of the target logit the covered features even
+control, before steering anything:
+
+```bash
+sbatch scripts/steerable_ceiling.wilkes3 <graph.json> Texas
+# Optional env: OUTPUT_JSON=/path/out.json EXTRA_ARGS='--layers 2,12,24,33 --chat-template'
+```
+
+It computes two things on one graph (no sweep needed):
+
+- **#1 read-off** — with attention/LayerNorm frozen the target logit is affine in
+  the feature activations (`z_t = const + Σ a·g`); one linearised backward gives
+  the direct logit mass `Σ a·g` carried by all tracked features (the ceiling on
+  what steering at this scope can move), the share at the target position, and the
+  supernode's own share. `const + total_mass_all` reproduces `z_t` to float
+  precision — printed as `verification_residual`.
+- **#2 intervention** — zeroing *all* tracked features gives the background
+  prediction (empirical `const`, confirming #1); zeroing just the supernode gives
+  its control.
+
+The printed `VERDICT` flags whether the result is coverage-limited (removing every
+tracked feature barely moves the prediction ⇒ generate graphs on more layers),
+supernode-incomplete, or genuinely leverage-bound (more layers unlikely to help).
+To sweep coverage, regenerate the graph at several `--layers` sets (same prompt /
+target) and compare the ceiling across them.
+
 Both wrappers default to `MAGNITUDES='-2,-1,0,0.5,1,1.5,...,8'` (0.5 steps over
 0–8, plus −1 and −2); the supernode label
 must match a `qParams.supernodes` entry exactly (case-insensitive). Run either

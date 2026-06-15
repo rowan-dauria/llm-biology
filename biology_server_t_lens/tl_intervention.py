@@ -43,7 +43,7 @@ Public surface:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 import torch
@@ -54,8 +54,10 @@ from transformer_lens.hook_points import HookPoint
 from biology_server_t_lens.tl_forward import ensure_replacement_mlp_hooks
 
 __all__ = [
+    "DirectContribResult",
     "FeatureIntervention",
     "InterventionResult",
+    "compute_direct_logit_contributions",
     "run_feature_intervention",
 ]
 
@@ -260,6 +262,7 @@ def run_feature_intervention(
     *,
     layers: Sequence[int] | None = None,
     measure_features: Sequence[FeatureKey] = (),
+    ablate_all_features_at: Mapping[int, Sequence[int] | None] | None = None,
     freeze_attention: bool = True,
     freeze_layernorm: bool = True,
     freeze_untracked_mlp: bool = True,
@@ -275,8 +278,17 @@ def run_feature_intervention(
     the clean/intervened activations of every intervened or measured feature so
     downstream effects can be checked against the attribution graph.
 
-    With ``interventions`` empty the intervened pass reproduces the clean logits
-    (up to float error) — a useful sanity check that the freezes line up.
+    ``ablate_all_features_at`` zeroes *every* transcoder feature at the named
+    tracked layers (mapping ``layer -> positions`` to zero, or ``layer -> None``
+    to zero all positions), applied after the per-feature clamps. Zeroing every
+    tracked feature leaves only the frozen background (embeddings, attention,
+    untracked MLPs, transcoder skip paths and error terms), so the resulting
+    logits are the steerable-ceiling complement ``C_const`` — what the prediction
+    rests on with no feature contribution at all.
+
+    With ``interventions`` empty and no ablation the intervened pass reproduces
+    the clean logits (up to float error) — a useful sanity check that the freezes
+    line up.
     """
     input_ids_tensor: torch.Tensor
     if isinstance(input_ids, str):
@@ -320,15 +332,25 @@ def run_feature_intervention(
 
         return hook
 
+    ablate_map = dict(ablate_all_features_at or {})
+
     def _iv_in_hook(layer: int):
         transcoder = transcoders[layer]
         clamps = iv_by_layer.get(layer, [])
+        ablate_here = layer in ablate_map
+        ablate_positions = ablate_map.get(layer)
 
         def hook(acts: torch.Tensor, hook: HookPoint) -> torch.Tensor:  # noqa: ARG001
             with torch.no_grad():
                 features = transcoder.encode(acts).detach()
                 for pos, feature, new_value in clamps:
                     features[:, pos, feature] = new_value
+                if ablate_here:
+                    if ablate_positions is None:
+                        features[:] = 0.0
+                    else:
+                        for pos in ablate_positions:
+                            features[:, pos, :] = 0.0
             intervened_features[layer] = features
             cap[f"_iv_mlp_in_{layer}"] = acts.detach()
             return acts
@@ -389,4 +411,177 @@ def run_feature_intervention(
         intervened_logits=intervened_logits,
         clean_feature_acts=_read_feature_acts(cap["features"], unique_keys),
         intervened_feature_acts=_read_feature_acts(intervened_features, unique_keys),
+    )
+
+
+@dataclass(slots=True)
+class DirectContribResult:
+    """Linearised direct-to-logit decomposition of one target logit.
+
+    With attention patterns and normalization scales frozen, the target logit is
+    an *affine* function of the transcoder feature activations::
+
+        z_t = const + Σ_(L,pos,f)  a_(L,pos,f) · g_(L,pos,f)
+
+    ``g`` is each feature's direct contribution coefficient — its decoder vector
+    routed through the frozen attention/residual path onto the target unembed
+    direction — and ``a · g`` is its direct logit mass. ``const`` is everything
+    steering cannot touch (embeddings, attention-only paths, untracked MLPs,
+    transcoder skip paths and error terms). ``const + total_mass_all`` reproduces
+    ``target_logit`` to float precision, which is the check that the split is real.
+    """
+
+    target_logit: float
+    const: float
+    total_mass_all: float
+    total_mass_target_pos: float
+    contributions: dict[FeatureKey, float] = field(default_factory=dict)
+    coeffs: dict[FeatureKey, float] = field(default_factory=dict)
+    clean_acts: dict[FeatureKey, float] = field(default_factory=dict)
+
+
+def compute_direct_logit_contributions(
+    model: HookedTransformer,
+    transcoders: dict[int, SingleLayerTranscoder],
+    input_ids: torch.Tensor | Sequence[int] | str,
+    *,
+    target_token_id: int,
+    target_pos: int = -1,
+    layers: Sequence[int] | None = None,
+    feature_keys: Sequence[FeatureKey] = (),
+    freeze_attention: bool = True,
+    freeze_layernorm: bool = True,
+    freeze_untracked_mlp: bool = True,
+) -> DirectContribResult:
+    """Read off each tracked feature's direct contribution to a target logit.
+
+    This is the *steerable-ceiling* read-off, not an intervention: it runs one
+    clean capture (for the freezes and the clean feature/error values), then one
+    forward+backward on the local replacement model with the clean feature
+    activations entered as differentiable leaves and the encoders bypassed (every
+    feature activation held fixed). The gradient of the target logit w.r.t. each
+    leaf is the direct coefficient ``g``; ``a · g`` is the per-feature direct
+    logit mass. ``total_mass_all`` sums it over every tracked feature (the share
+    of the logit that lives on this layer subset — the ceiling on what feature
+    steering can move); ``total_mass_target_pos`` restricts to the target
+    position (the direct-write features).
+    """
+    if isinstance(input_ids, str):
+        input_ids_tensor = model.to_tokens(input_ids, prepend_bos=False)
+    else:
+        input_ids_tensor = torch.as_tensor(input_ids, dtype=torch.long, device=model.W_E.device)
+    if input_ids_tensor.dim() == 1:
+        input_ids_tensor = input_ids_tensor.unsqueeze(0)
+    if input_ids_tensor.shape[0] != 1:
+        raise ValueError(
+            f"Expected a single prompt (1, n_pos), got {tuple(input_ids_tensor.shape)}"
+        )
+
+    tracked = sorted(transcoders) if layers is None else sorted(layers)
+    for layer in tracked:
+        if layer not in transcoders:
+            raise KeyError(f"No transcoder provided for tracked layer {layer}")
+    tracked_set = set(tracked)
+
+    ensure_replacement_mlp_hooks(model, tracked)
+    cap = _capture_clean(model, input_ids_tensor, transcoders, tracked)
+
+    n_pos = input_ids_tensor.shape[1]
+    tpos = int(target_pos) % n_pos
+
+    # Clean feature activations as differentiable leaves; the encoders are
+    # bypassed so feature activations are held fixed (linearised read-off).
+    feat_leaf: dict[int, torch.Tensor] = {
+        layer: cap["features"][layer].detach().clone().requires_grad_(True) for layer in tracked
+    }
+    mlp_in_cache: dict[int, torch.Tensor] = {}
+    fwd_hooks: list = []
+
+    def _freeze_value_hook(value: torch.Tensor):
+        def hook(acts: torch.Tensor, hook: HookPoint) -> torch.Tensor:  # noqa: ARG001
+            return value.to(device=acts.device, dtype=acts.dtype)
+
+        return hook
+
+    def _leaf_in_hook(layer: int):
+        def hook(acts: torch.Tensor, hook: HookPoint) -> torch.Tensor:  # noqa: ARG001
+            mlp_in_cache[layer] = acts
+            return acts
+
+        return hook
+
+    def _leaf_out_hook(layer: int):
+        transcoder = transcoders[layer]
+
+        def hook(acts: torch.Tensor, hook: HookPoint) -> torch.Tensor:  # noqa: ARG001
+            features = feat_leaf[layer]
+            skip_in = mlp_in_cache[layer] if transcoder.W_skip is not None else None
+            reconstruction = transcoder.decode(
+                features.to(transcoder.W_dec.dtype),
+                None if skip_in is None else skip_in.to(transcoder.W_dec.dtype),
+            ).to(acts.dtype)
+            return reconstruction + cap["error"][layer].to(device=acts.device, dtype=acts.dtype)
+
+        return hook
+
+    for layer in _block_layers(model):
+        if freeze_attention:
+            fwd_hooks.append(
+                (f"blocks.{layer}.attn.hook_pattern", _freeze_value_hook(cap["patterns"][layer]))
+            )
+        if freeze_layernorm:
+            fwd_hooks.append(
+                (f"blocks.{layer}.ln1.hook_scale", _freeze_value_hook(cap["ln1"][layer]))
+            )
+            fwd_hooks.append(
+                (f"blocks.{layer}.ln2.hook_scale", _freeze_value_hook(cap["ln2"][layer]))
+            )
+        if layer in tracked_set:
+            fwd_hooks.append((f"blocks.{layer}.mlp.hook_in", _leaf_in_hook(layer)))
+            fwd_hooks.append((f"blocks.{layer}.hook_mlp_out", _leaf_out_hook(layer)))
+        elif freeze_untracked_mlp:
+            fwd_hooks.append(
+                (f"blocks.{layer}.hook_mlp_out", _freeze_value_hook(cap["untracked_mlp"][layer]))
+            )
+
+    if freeze_layernorm and cap["ln_final"] is not None:
+        fwd_hooks.append(("ln_final.hook_scale", _freeze_value_hook(cap["ln_final"])))
+
+    with torch.enable_grad():
+        logits = model.run_with_hooks(input_ids_tensor, fwd_hooks=fwd_hooks)
+        target_logit = logits[0, tpos, target_token_id]
+        grads = torch.autograd.grad(target_logit, [feat_leaf[layer] for layer in tracked])
+
+    g_by_layer = dict(zip(tracked, grads, strict=True))
+
+    total_mass_all = 0.0
+    total_mass_target_pos = 0.0
+    for layer in tracked:
+        acts = cap["features"][layer]
+        grad = g_by_layer[layer]
+        total_mass_all += float((acts * grad).sum().item())
+        total_mass_target_pos += float((acts[:, tpos, :] * grad[:, tpos, :]).sum().item())
+
+    contributions: dict[FeatureKey, float] = {}
+    coeffs: dict[FeatureKey, float] = {}
+    clean_acts: dict[FeatureKey, float] = {}
+    for layer, pos, feature in feature_keys:
+        grad = g_by_layer.get(layer)
+        if grad is None:
+            continue
+        act = float(cap["features"][layer][0, pos, feature].item())
+        coeff = float(grad[0, pos, feature].item())
+        clean_acts[(layer, pos, feature)] = act
+        coeffs[(layer, pos, feature)] = coeff
+        contributions[(layer, pos, feature)] = act * coeff
+
+    z = float(target_logit.item())
+    return DirectContribResult(
+        target_logit=z,
+        const=z - total_mass_all,
+        total_mass_all=total_mass_all,
+        total_mass_target_pos=total_mass_target_pos,
+        contributions=contributions,
+        coeffs=coeffs,
+        clean_acts=clean_acts,
     )
