@@ -21,6 +21,10 @@ Because the odds transform is non-linear, the baseline is aggregated *after*
 transforming each draw: each draw's intervened probability is
 ``clean_prob + prob_delta``, converted to the chosen metric, then summarised by
 median with a 5-95th percentile null band (spread, not SEM).
+
+``--m-range`` crops the x-axis (default ``-1,3``) and rescales y to that window,
+keeping the near-distribution causal regime legible; large multipliers drive the
+model off-distribution and are better viewed in the full-range decomposition.
 """
 
 from __future__ import annotations
@@ -61,6 +65,15 @@ def main() -> None:
         help="y-axis quantity: odds p/(1-p) [default] or raw probability p",
     )
     parser.add_argument("--output", type=Path, default=None, help="output PNG path")
+    parser.add_argument(
+        "--m-range",
+        default="-1,3",
+        help=(
+            "Visible magnitude window 'LO,HI' (auto-padded, y rescaled to the window). "
+            "Default '-1,3' keeps the near-distribution causal regime; pass 'full' to "
+            "show every magnitude."
+        ),
+    )
     parser.add_argument(
         "--linear-y",
         action="store_true",
@@ -155,8 +168,31 @@ def main() -> None:
 
     if use_log:
         ax.set_yscale("log")
-    if metric == "prob":
-        ax.set_ylim(0.0, 1.02)
+
+    # Visible window: crop x to [lo, hi] (auto-padded) and rescale y to the data
+    # inside that window, so the near-distribution regime isn't squashed by the
+    # huge large-|m| excursions.
+    raw_range = args.m_range.strip().lower()
+    if raw_range in ("full", "none", "all"):
+        if metric == "prob":
+            ax.set_ylim(0.0, 1.02)
+    else:
+        lo_s, hi_s = args.m_range.split(",")
+        lo, hi = float(lo_s), float(hi_s)
+        xpad = 0.08 * (hi - lo)
+        ax.set_xlim(lo - xpad, hi + xpad)
+        mb = (b_mag >= lo) & (b_mag <= hi)
+        ms = (s_mag >= lo) & (s_mag <= hi)
+        lows = [p5[mb], s_metric[ms], np.array([clean_ref])]
+        highs = [p95[mb], s_metric[ms], np.array([clean_ref])]
+        vis_lo = min(float(a.min()) for a in lows if a.size)
+        vis_hi = max(float(a.max()) for a in highs if a.size)
+        if metric == "prob":
+            ypad = 0.05 * max(vis_hi - vis_lo, 1e-3)
+            ax.set_ylim(max(0.0, vis_lo - ypad), min(1.02, vis_hi + ypad))
+        else:
+            ax.set_ylim(vis_lo / 1.4, vis_hi * 1.4)
+
     ax.set_xlabel("steering magnitude  m   (feature value = m × clean activation)")
     ax.set_ylabel(ylabel)
     ax.set_title(
