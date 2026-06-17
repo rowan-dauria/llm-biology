@@ -1297,6 +1297,7 @@ class BiologyAttributionRunner:
         *,
         layers: list[int] | None = None,
         model_id: str = MODEL_ID,
+        tl_model_id: str | None = None,
         graph_file_dir: Path | str = DEFAULT_GRAPH_DIR,
         topk_dir: Path | str = DEFAULT_TOPK_DIR,
         preview_top_k: int = DEFAULT_LOGITS_TOP_K,
@@ -1306,6 +1307,7 @@ class BiologyAttributionRunner:
     ) -> None:
         self.layers = list(layers or DEFAULT_LAYERS)
         self.model_id = model_id
+        self.tl_model_id = tl_model_id
         self.graph_file_dir = Path(graph_file_dir)
         self.topk_dir = Path(topk_dir)
         self.preview_top_k = preview_top_k
@@ -1400,13 +1402,20 @@ class BiologyAttributionRunner:
             self._release_preview_model()
             tokenizer = self._ensure_tokenizer()
             with timed("Loading model"):
+                tl_model_id = self.tl_model_id or self.model_id
+                hf_model_id = (
+                    self.model_id
+                    if self.tl_model_id and self.tl_model_id != self.model_id
+                    else None
+                )
                 model = memory_profile_call(
                     "tl_model:load_replacement_model",
                     load_replacement_model,
-                    self.model_id,
+                    tl_model_id,
                     device=device,
                     dtype=dtype,
                     cache_dir=CACHE_DIR,
+                    hf_model_id=hf_model_id,
                 )
 
             actual_layers = model.cfg.n_layers
