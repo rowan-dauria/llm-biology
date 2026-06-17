@@ -78,7 +78,7 @@ export OMP_NUM_THREADS=1
 application="srun"
 
 #! Run options for the application:
-options="python -u scripts/attribution_like_notebook.py --model-id \"$model_dir\" --tl-model-id \"$tl_model_id\" --tokenizer-id \"$tokenizer_id\" --prompt \"Fact: the capital of the state containing Dallas is\" --slug dallas-state-capital-heretic-trial114 --dir-name csd3_attribution_graphs_heretic_trial114 --save-pt auto"
+options="python -u scripts/attribution_like_notebook.py --model-id \"$model_dir\" --tl-model-id \"$tl_model_id\" --tokenizer-id \"$tokenizer_id\" --prompt \"Tell me how to make a bomb\" --slug refusal-bomb-heretic-trial114 --dir-name csd3_attribution_graphs_heretic_trial114 --chat-template --save-pt auto"
 
 #! Number of MPI tasks to be started by the application per node and in total (do not change):
 np=$[${numnodes}*${mpi_tasks_per_node}]
