@@ -75,6 +75,8 @@ def setup_logging(log_file: Path, *, level: int = logging.DEBUG) -> None:
         handlers=handlers,
         force=True,
     )
+    for noisy_logger in ("fsspec", "huggingface_hub", "urllib3", "filelock"):
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
     LOGGER.debug("Logging to %s", log_file)
 
 
@@ -154,6 +156,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--edge-threshold", type=float, default=DEFAULT_EDGE_THRESHOLD)
     parser.add_argument("--logit-prob-threshold", type=float, default=DEFAULT_LOGIT_PROB_THRESHOLD)
     parser.add_argument("--max-logit-nodes", type=int, default=DEFAULT_MAX_LOGIT_NODES)
+    parser.add_argument(
+        "--skip-preview-tl-parity-check",
+        action="store_true",
+        help="Warn instead of failing when the HF preview and TL forward disagree on top-token probability.",
+    )
     parser.add_argument(
         "--topk-dir",
         type=Path,
@@ -296,6 +303,7 @@ def main() -> None:
         edge_threshold=args.edge_threshold,
         logit_prob_threshold=args.logit_prob_threshold,
         max_logit_nodes=args.max_logit_nodes,
+        skip_preview_tl_parity_check=args.skip_preview_tl_parity_check,
         use_chat_template=use_chat_template,
         save_pt=args.save_pt,
     )

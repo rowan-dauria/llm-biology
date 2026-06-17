@@ -1593,6 +1593,7 @@ class BiologyAttributionRunner:
         preview_top_token: str | None = None,
         preview_top_token_prob: float | None = None,
         preview_tl_prob_tolerance: float = DEFAULT_PREVIEW_TL_PROB_TOLERANCE,
+        skip_preview_tl_parity_check: bool = False,
     ) -> GraphResult:
         """Generate and export a circuit-tracer-compatible graph JSON."""
 
@@ -1637,20 +1638,24 @@ class BiologyAttributionRunner:
                         ),
                         prob=float(preview_top_token_prob),
                     )
-                    # check the transcoder model logit predictions match base model within a
-                    # tolerance
-                    assert_top_token_parity(
-                        preview_top=preview_top,
-                        tl_top=tl_top,
-                        prob_tolerance=preview_tl_prob_tolerance,
-                    )
-                    print(
-                        "[INFO] preview/TL top-token parity ok: "
-                        f"id={tl_top.token_id} ({tl_top.token!r}) "
-                        f"preview_p={preview_top.prob:.4f} tl_p={tl_top.prob:.4f}"
-                    )
-                    if target_token_id is None and target_token is None:
-                        target_token_id = preview_top.token_id
+                    if skip_preview_tl_parity_check:
+                        print(
+                            "[WARN] skipping preview/TL top-token parity check: "
+                            f"preview id={preview_top.token_id} ({preview_top.token!r}) "
+                            f"p={preview_top.prob:.4f}; "
+                            f"TL id={tl_top.token_id} ({tl_top.token!r}) p={tl_top.prob:.4f}"
+                        )
+                    else:
+                        assert_top_token_parity(
+                            preview_top=preview_top,
+                            tl_top=tl_top,
+                            prob_tolerance=preview_tl_prob_tolerance,
+                        )
+                        print(
+                            "[INFO] preview/TL top-token parity ok: "
+                            f"id={tl_top.token_id} ({tl_top.token!r}) "
+                            f"preview_p={preview_top.prob:.4f} tl_p={tl_top.prob:.4f}"
+                        )
                 logit_targets = select_logit_targets(
                     tokenizer,
                     last_logits,
@@ -1662,11 +1667,13 @@ class BiologyAttributionRunner:
                 )
                 primary_target = logit_targets[0]
                 target_logit = last_logits[primary_target.token_id]
+                logit_prob_mass = sum(target.prob for target in logit_targets)
                 print(
                     f"[INFO] primary logit id={primary_target.token_id} "
                     f"({primary_target.token!r}) p={primary_target.prob:.4f} "
                     f"logit={target_logit.item():.3f}; "
-                    f"logit nodes={len(logit_targets)}"
+                    f"logit nodes={len(logit_targets)} "
+                    f"prob_mass={logit_prob_mass:.4f}/{logit_prob_threshold:.4f}"
                 )
 
             self._ensure_loaded(include_transcoders=True)
