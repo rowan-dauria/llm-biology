@@ -1298,6 +1298,7 @@ class BiologyAttributionRunner:
         layers: list[int] | None = None,
         model_id: str = MODEL_ID,
         tl_model_id: str | None = None,
+        tokenizer_id: str | None = None,
         graph_file_dir: Path | str = DEFAULT_GRAPH_DIR,
         topk_dir: Path | str = DEFAULT_TOPK_DIR,
         preview_top_k: int = DEFAULT_LOGITS_TOP_K,
@@ -1308,6 +1309,7 @@ class BiologyAttributionRunner:
         self.layers = list(layers or DEFAULT_LAYERS)
         self.model_id = model_id
         self.tl_model_id = tl_model_id
+        self.tokenizer_id = tokenizer_id
         self.graph_file_dir = Path(graph_file_dir)
         self.topk_dir = Path(topk_dir)
         self.preview_top_k = preview_top_k
@@ -1334,7 +1336,7 @@ class BiologyAttributionRunner:
 
         with memory_scope("tokenizer:from_pretrained"):
             tokenizer = AutoTokenizer.from_pretrained(
-                self.model_id,
+                self.tokenizer_id or self.model_id,
                 cache_dir=CACHE_DIR,
                 trust_remote_code=True,
             )

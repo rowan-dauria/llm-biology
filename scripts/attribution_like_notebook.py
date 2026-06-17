@@ -186,6 +186,14 @@ def parse_args() -> argparse.Namespace:
             "--model-id points at a local merged checkpoint of a supported base model."
         ),
     )
+    parser.add_argument(
+        "--tokenizer-id",
+        default=None,
+        help=(
+            "Tokenizer source. Use this when --model-id points at a local checkpoint "
+            "whose tokenizer files are missing or incompatible."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--preview-top-k", type=int, default=10)
     return parser.parse_args()
@@ -211,6 +219,7 @@ def main() -> None:
     LOGGER.info("output_dir=%s", output_dir)
     LOGGER.info("model_id=%s", args.model_id)
     LOGGER.info("tl_model_id=%s", args.tl_model_id or args.model_id)
+    LOGGER.info("tokenizer_id=%s", args.tokenizer_id or args.model_id)
     LOGGER.info("use_chat_template=%s", use_chat_template)
     LOGGER.info("=" * 70)
 
@@ -240,6 +249,7 @@ def main() -> None:
         layers=layers,
         model_id=args.model_id,
         tl_model_id=args.tl_model_id,
+        tokenizer_id=args.tokenizer_id,
         graph_file_dir=output_dir,
         batch_size=args.batch_size,
         max_feature_nodes=args.max_feature_nodes,
