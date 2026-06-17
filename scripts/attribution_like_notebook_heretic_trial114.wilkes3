@@ -66,7 +66,7 @@ export HF_HUB_CACHE="/rds/user/rd761/hpc-work/huggingface/hub"
 workdir="/home/rd761/mphil-project/llm-biology"
 
 #! Merged Heretic model exported from trial 114.
-model_dir="/home/rd761/rds/hpc-work/models-heretic/qwen3-4b-heretic-trial114-merged"
+model_dir="/home/rd761/rds/hpc-work/heretic-qwen3-4b/job_30675538/exports/qwen3-4b-heretic-trial114-merged"
 tl_model_id="Qwen/Qwen3-4B"
 
 #! Are you using OpenMP (NB this is unrelated to OpenMPI)? If so increase this
