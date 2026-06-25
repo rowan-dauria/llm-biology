@@ -239,6 +239,16 @@ def parse_args() -> argparse.Namespace:
         help="Which feature activations to summarize alongside logits.",
     )
     parser.add_argument("--top-logit-changes", type=int, default=10)
+    parser.add_argument(
+        "--top-prob-tokens",
+        type=int,
+        default=10,
+        help=(
+            "How many top-probability tokens to record per magnitude in "
+            "top_clean_tokens / top_intervened_tokens (the top-L logit "
+            "distribution). Default 10; raise to track a wider distribution."
+        ),
+    )
     parser.add_argument("--top-feature-changes", type=int, default=20)
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument(
@@ -450,12 +460,12 @@ def main() -> None:
                 "top_clean_tokens": top_token_rows(
                     tokenizer,
                     clean_probs,
-                    k=min(args.top_logit_changes, 10),
+                    k=args.top_prob_tokens,
                 ),
                 "top_intervened_tokens": top_token_rows(
                     tokenizer,
                     intervened_probs,
-                    k=min(args.top_logit_changes, 10),
+                    k=args.top_prob_tokens,
                 ),
                 "top_feature_changes": feature_changes[: args.top_feature_changes],
             }
@@ -479,6 +489,7 @@ def main() -> None:
             "magnitudes": magnitudes,
             "steering_mode": "factor_times_clean_activation",
             "measure": args.measure,
+            "top_prob_tokens": args.top_prob_tokens,
             "model_id": args.model_id,
             "device": str(device),
             "dtype": str(dtype),
