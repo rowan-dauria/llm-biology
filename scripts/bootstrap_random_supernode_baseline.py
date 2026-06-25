@@ -5,20 +5,42 @@ Companion to ``sweep_supernode_interventions.py``. That script steers the
 whether the observed effect is special by comparing it to ``N`` random
 size-matched feature sets drawn from the same population.
 
-For a supernode with constituents at cells ``(layer, pos)`` it builds a pool of
-features that are **active at those same cells** on the clean forward (so the
-control is "other features firing at the same tokens/layers", not "dead
-features"), then draws ``N`` bootstrap sets that match the supernode's
-``(layer, pos)`` footprint exactly (``--sampling matched-cell``, default) or
-that draw ``K`` features from the pooled active cells (``--sampling
-global-active``). Each draw is swept over the same magnitudes with
-``run_feature_intervention``; per magnitude we report the targeted effect, the
-baseline distribution (mean/std, percentiles) and a one-sided empirical
-p-value.
+Two families of baseline are supported.
 
-Plot the targeted ``logit_delta(m)`` curve against the baseline percentile band
-(use the spread, not SEM): if Texas sits outside the band, it is doing more
-than a random same-size set at the same tokens.
+*Matched random-direction baselines* (``--sampling gaussian-direction``, the
+default, or ``gaussian-rotation``) test the semantic *direction* itself rather than other
+features (cf. Alessandro 2026-06-19). The real supernode perturbation at each
+cell is the additive residual write ``u_cell = Σ_f a_f·W_dec[f]`` (clean
+activation × decoder vector), swept as ``(m-1)·u_cell``; both the targeted and
+baseline arms inject through the *same* additive ``residual_writes`` path so they
+propagate identically. Each random draw replaces ``u_cell`` with a norm-matched
+random vector:
+
+- ``gaussian-direction``: isotropic Gaussian unit vector(s) scaled to match the
+  real norm — per cell (``--match per-cell``, default; one draw matched to the
+  cell's summed norm) or per feature (``--match per-feature``; sum of per-feature
+  norm-matched draws, which under-shoots for correlated cells).
+- ``gaussian-rotation``: a random rotation of the supernode's constituent vectors
+  into a random subspace, preserving every per-cell norm *and* the internal
+  angles between constituents exactly (the geometry-preserving control).
+
+The *other-feature baselines* (``--sampling matched-cell`` or ``global-active``)
+are kept as a secondary control: they draw ``N`` size-matched sets of features
+**active at the supernode's cells** and clamp them like the real supernode,
+testing "is the supernode special vs *other learned features*" rather than vs an
+arbitrary direction.
+
+For the random-direction modes we also record a per-cell norm check comparing
+each cell's real summed norm ``‖Σ a_f W_dec[f]‖`` with the orthogonal
+expectation ``√(Σ‖a_f W_dec[f]‖²)``; a ratio near 1 means per-feature matching
+already matches the summed perturbation.
+
+Each draw is swept over the same magnitudes; per magnitude we report the
+targeted effect, the baseline distribution (mean/std, percentiles) and a
+one-sided empirical p-value. Plot the targeted ``logit_delta(m)`` curve against
+the baseline percentile band (use the spread, not SEM): if the supernode sits
+outside the band, it is doing more than a norm-matched random perturbation at
+the same tokens.
 """
 
 from __future__ import annotations
@@ -255,6 +277,196 @@ def sample_draws(
     raise ValueError(f"unknown sampling strategy: {sampling!r}")
 
 
+# --- Matched random-direction baselines ------------------------------------
+# A cell write is one (layer, pos) -> d_model vector. The real supernode writes
+# u_cell = Σ_f a_f W_dec[f]; random draws replace u_cell with a norm-matched
+# random vector. ``run_one_sweep_writes`` then sweeps (m-1)*u_cell additively.
+CellKey = tuple[int, int]
+
+
+def constituent_decoder_vectors(
+    transcoders: dict[int, Any],
+    clean_features: dict[int, Any],
+    constituent_keys: list[FeatureKey],
+) -> dict[FeatureKey, tuple[float, np.ndarray]]:
+    """Map each constituent to ``(clean_activation, decoder_vector)``.
+
+    ``decoder_vector`` is the transcoder row ``W_dec[feature]`` (a ``d_model``
+    direction); ``a_f · decoder_vector`` is the feature's clean residual write.
+    """
+    per_feature: dict[FeatureKey, tuple[float, np.ndarray]] = {}
+    w_dec_cache: dict[int, np.ndarray] = {}
+    for layer, pos, feature in constituent_keys:
+        if layer not in w_dec_cache:
+            w_dec_cache[layer] = transcoders[layer].W_dec.detach().float().cpu().numpy()
+        act = float(clean_features[layer][pos, feature])
+        per_feature[(layer, pos, feature)] = (act, w_dec_cache[layer][feature])
+    return per_feature
+
+
+def _cells_from_per_feature(
+    per_feature: dict[FeatureKey, tuple[float, np.ndarray]],
+) -> dict[CellKey, list[tuple[float, np.ndarray]]]:
+    cells: dict[CellKey, list[tuple[float, np.ndarray]]] = {}
+    for (layer, pos, _feature), member in per_feature.items():
+        cells.setdefault((layer, pos), []).append(member)
+    return cells
+
+
+def real_cell_writes(
+    per_feature: dict[FeatureKey, tuple[float, np.ndarray]],
+) -> dict[CellKey, np.ndarray]:
+    """Per-cell real perturbation base vector ``u_cell = Σ_f a_f W_dec[f]``."""
+    return {
+        cell: np.sum([act * vec for act, vec in members], axis=0)
+        for cell, members in _cells_from_per_feature(per_feature).items()
+    }
+
+
+def per_cell_norm_check(
+    per_feature: dict[FeatureKey, tuple[float, np.ndarray]],
+) -> dict[str, dict[str, Any]]:
+    """Compare each cell's real summed norm with the orthogonal expectation.
+
+    ``real_summed_norm = ‖Σ a_f W_dec[f]‖`` vs ``orthogonal_expected_norm =
+    √(Σ‖a_f W_dec[f]‖²)`` (what near-orthogonal per-feature random draws sum to).
+    ``ratio`` near 1 means per-feature norm matching already matches the summed
+    perturbation; far from 1 flags correlated constituents in that cell.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for (layer, pos), members in _cells_from_per_feature(per_feature).items():
+        feat_vecs = [act * vec for act, vec in members]
+        real = float(np.linalg.norm(np.sum(feat_vecs, axis=0)))
+        sqrt_sum_sq = float(np.sqrt(sum(float(np.dot(v, v)) for v in feat_vecs)))
+        out[f"{layer}_{pos}"] = {
+            "n_features": len(members),
+            "real_summed_norm": real,
+            "orthogonal_expected_norm": sqrt_sum_sq,
+            "ratio": (real / sqrt_sum_sq) if sqrt_sum_sq > 0 else float("nan"),
+        }
+    return out
+
+
+def _random_unit(d_model: int, rng: np.random.Generator) -> np.ndarray:
+    g = rng.standard_normal(d_model)
+    norm = float(np.linalg.norm(g))
+    return g / norm if norm > 0 else g
+
+
+def _rotated_cell_writes(
+    per_feature: dict[FeatureKey, tuple[float, np.ndarray]],
+    rng: np.random.Generator,
+) -> dict[CellKey, np.ndarray]:
+    """Rotate all constituent vectors into a random subspace, preserving Gram.
+
+    Stack ``v_f = a_f W_dec[f]`` as rows of ``V``; with ``V.T = Q R`` we have
+    ``V V^T = R^T R``. Mapping the coordinates ``R^T`` onto a fresh random
+    orthonormal frame ``Qn`` gives ``V' = R^T Qn^T`` with ``V' V'^T = R^T R`` —
+    identical norms and inter-vector angles, random orientation/subspace.
+    """
+    keys = list(per_feature)
+    rows = np.stack([per_feature[k][0] * per_feature[k][1] for k in keys])  # (k, d_model)
+    d_model = rows.shape[1]
+    _q, r = np.linalg.qr(rows.T)  # r: (k, k)
+    frame, _ = np.linalg.qr(rng.standard_normal((d_model, r.shape[0])))  # (d_model, k)
+    rotated = r.T @ frame.T  # (k, d_model)
+    draw: dict[CellKey, np.ndarray] = {}
+    for (layer, pos, _feature), row in zip(keys, rotated, strict=True):
+        cell = (layer, pos)
+        draw[cell] = draw[cell] + row if cell in draw else row.copy()
+    return draw
+
+
+def sample_gaussian_writes(
+    per_feature: dict[FeatureKey, tuple[float, np.ndarray]],
+    *,
+    n: int,
+    match: str,
+    rotation: bool,
+    rng: np.random.Generator,
+) -> list[dict[CellKey, np.ndarray]]:
+    """Draw ``n`` random per-cell base writes (m-independent, scaled by (m-1))."""
+    cells = _cells_from_per_feature(per_feature)
+    d_model = next(iter(per_feature.values()))[1].shape[0]
+    draws: list[dict[CellKey, np.ndarray]] = []
+    for _ in range(n):
+        if rotation:
+            draws.append(_rotated_cell_writes(per_feature, rng))
+            continue
+        draw: dict[CellKey, np.ndarray] = {}
+        for cell, members in cells.items():
+            if match == "per-cell":
+                target_norm = float(np.linalg.norm(np.sum([a * v for a, v in members], axis=0)))
+                draw[cell] = _random_unit(d_model, rng) * target_norm
+            else:  # per-feature: norm-match each constituent, then sum
+                acc = np.zeros(d_model)
+                for act, vec in members:
+                    acc = acc + _random_unit(d_model, rng) * float(np.linalg.norm(act * vec))
+                draw[cell] = acc
+        draws.append(draw)
+    return draws
+
+
+def run_one_sweep_writes(
+    model: Any,
+    transcoders: dict[int, Any],
+    input_ids: Any,
+    base_writes: dict[CellKey, np.ndarray],
+    magnitudes: list[float],
+    layers: list[int],
+    target_token_id: int | None,
+    target_pos: int,
+) -> tuple[list[dict[str, float]], int, float]:
+    """Sweep one set of additive cell writes over magnitudes.
+
+    At magnitude ``m`` the write at each cell is ``(m-1)·base_write`` (so ``m=1``
+    reproduces clean, matching the multiplicative-factor x-axis of the other
+    baselines). Mirrors ``run_one_sweep``'s per-magnitude target stats.
+    """
+    import torch
+
+    from biology_server_t_lens.tl_intervention import run_feature_intervention
+
+    rows: list[dict[str, float]] = []
+    resolved_token_id: int | None = target_token_id
+    clean_prob = float("nan")
+    for magnitude in magnitudes:
+        scale = float(magnitude) - 1.0
+        residual_writes = {
+            cell: torch.from_numpy(np.ascontiguousarray(scale * base, dtype=np.float32))
+            for cell, base in base_writes.items()
+        }
+        result = run_feature_intervention(
+            model,
+            transcoders,
+            input_ids,
+            interventions=[],
+            layers=layers,
+            residual_writes=residual_writes,
+        )
+        clean_logits = result.clean_logits[target_pos]
+        intervened_logits = result.intervened_logits[target_pos]
+        logit_diff = intervened_logits - clean_logits
+        clean_probs = tensor_probs(clean_logits)
+        intervened_probs = tensor_probs(intervened_logits)
+        if resolved_token_id is None:
+            resolved_token_id = int(clean_logits.argmax().item())
+        clean_prob = float(clean_probs[resolved_token_id].item())
+        rows.append(
+            {
+                "magnitude": magnitude,
+                "logit_delta": float(logit_diff[resolved_token_id].item()),
+                "prob_delta": float(
+                    (intervened_probs[resolved_token_id] - clean_probs[resolved_token_id]).item()
+                ),
+                "max_abs_logit_delta": float(logit_diff.abs().max().item()),
+            }
+        )
+    if resolved_token_id is None:
+        raise RuntimeError("no magnitudes swept; cannot resolve target token")
+    return rows, resolved_token_id, clean_prob
+
+
 def run_one_sweep(
     model: Any,
     transcoders: dict[int, Any],
@@ -370,9 +582,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--sampling",
-        choices=("matched-cell", "global-active"),
-        default="matched-cell",
-        help="matched-cell: same (layer,pos) footprint; global-active: K from pooled cells.",
+        choices=("matched-cell", "global-active", "gaussian-direction", "gaussian-rotation"),
+        default="gaussian-direction",
+        help=(
+            "Baseline family (default: gaussian-direction). gaussian-direction/"
+            "gaussian-rotation: norm-matched random residual-write directions controlling "
+            "for the semantic direction itself. matched-cell/global-active: other learned "
+            "features (same footprint / K from pooled cells)."
+        ),
+    )
+    parser.add_argument(
+        "--match",
+        choices=("per-feature", "per-cell"),
+        default="per-cell",
+        help=(
+            "Norm-matching granularity for gaussian-direction (default: per-cell). per-cell "
+            "matches each cell's summed norm ‖Σ a_f W_dec[f]‖ exactly; per-feature matches "
+            "each constituent's ‖a_f W_dec[f]‖ then sums (under-shoots for correlated cells). "
+            "Ignored for other --sampling modes."
+        ),
     )
     parser.add_argument(
         "--min-activation",
@@ -509,50 +737,97 @@ def main() -> None:
     model = load_replacement_model(args.model_id, device=device, dtype=dtype, cache_dir=CACHE_DIR)
     transcoders = load_transcoders(layers, device=device, dtype=dtype)
 
-    # Build candidate pool from a single clean forward, then draw bootstraps.
+    # One clean forward feeds both baseline families.
     clean_features = capture_clean_features(model, transcoders, input_ids, layers)
-    pool = build_candidate_pool(clean_features, cells, set(constituent_keys), args.min_activation)
-    pool_sizes = {f"{layer}_{pos}": len(c) for (layer, pos), c in pool.items()}
-    LOGGER.info("candidate pool per cell: %s", pool_sizes)
-    thin = [cell for cell, c in pool.items() if len(c) < 2]
-    if thin:
-        LOGGER.warning("cells with <2 candidates (will sample with replacement): %s", thin)
-
     rng = np.random.default_rng(args.seed)
-    draws, draw_info = sample_draws(
-        constituent_keys,
-        clean_features,
-        pool,
-        n=args.n_bootstrap,
-        sampling=args.sampling,
-        match_magnitude_tol=args.match_magnitude_tol,
-        rng=rng,
-    )
+
+    gaussian = args.sampling in ("gaussian-direction", "gaussian-rotation")
+    pool_sizes: dict[str, int] = {}
+    draw_info: dict[str, Any] = {}
+    norm_check: dict[str, dict[str, Any]] = {}
+    real_cell_norms: dict[str, float] = {}
+    draws_serialized: list[list[str]] | None
+
+    if gaussian:
+        # Matched random-direction baseline: real perturbation is the additive
+        # residual write u_cell = Σ a_f W_dec[f]; random draws norm-match it.
+        per_feature = constituent_decoder_vectors(transcoders, clean_features, constituent_keys)
+        base_writes_real = real_cell_writes(per_feature)
+        real_cell_norms = {
+            f"{layer}_{pos}": float(np.linalg.norm(v))
+            for (layer, pos), v in base_writes_real.items()
+        }
+        norm_check = per_cell_norm_check(per_feature)
+        LOGGER.info("per-cell summed-norm check (real vs orthogonal expectation):")
+        for cell_name, info in norm_check.items():
+            LOGGER.info(
+                "  cell %s n=%d real=%.4f orthog=%.4f ratio=%.3f",
+                cell_name,
+                info["n_features"],
+                info["real_summed_norm"],
+                info["orthogonal_expected_norm"],
+                info["ratio"],
+            )
+        baseline_items: list[Any] = sample_gaussian_writes(
+            per_feature,
+            n=args.n_bootstrap,
+            match=args.match,
+            rotation=(args.sampling == "gaussian-rotation"),
+            rng=rng,
+        )
+        targeted_item: Any = base_writes_real
+        draw_info = {
+            "kind": args.sampling,
+            "match": args.match if args.sampling == "gaussian-direction" else None,
+            "n_cells": len(base_writes_real),
+        }
+        draws_serialized = None
+
+        def sweep(item: Any, tok: int | None) -> tuple[list[dict[str, float]], int, float]:
+            return run_one_sweep_writes(
+                model, transcoders, input_ids, item, magnitudes, layers, tok, target_pos
+            )
+    else:
+        pool = build_candidate_pool(
+            clean_features, cells, set(constituent_keys), args.min_activation
+        )
+        pool_sizes = {f"{layer}_{pos}": len(c) for (layer, pos), c in pool.items()}
+        LOGGER.info("candidate pool per cell: %s", pool_sizes)
+        thin = [cell for cell, c in pool.items() if len(c) < 2]
+        if thin:
+            LOGGER.warning("cells with <2 candidates (will sample with replacement): %s", thin)
+        baseline_items, draw_info = sample_draws(
+            constituent_keys,
+            clean_features,
+            pool,
+            n=args.n_bootstrap,
+            sampling=args.sampling,
+            match_magnitude_tol=args.match_magnitude_tol,
+            rng=rng,
+        )
+        targeted_item = constituent_keys
+        draws_serialized = [
+            [f"{layer}_{feature}_{pos}" for layer, pos, feature in draw] for draw in baseline_items
+        ]
+
+        def sweep(item: Any, tok: int | None) -> tuple[list[dict[str, float]], int, float]:
+            return run_one_sweep(
+                model, transcoders, input_ids, item, magnitudes, layers, tok, target_pos
+            )
 
     start = time.time()
     LOGGER.info("running targeted sweep (%d features)", len(constituent_keys))
-    targeted_rows, resolved_token_id, clean_prob = run_one_sweep(
-        model,
-        transcoders,
-        input_ids,
-        constituent_keys,
-        magnitudes,
-        layers,
-        target_token_id,
-        target_pos,
-    )
+    targeted_rows, resolved_token_id, clean_prob = sweep(targeted_item, target_token_id)
 
     # Collect baseline draws: per-magnitude lists of each metric.
     metrics = ("logit_delta", "prob_delta", "max_abs_logit_delta")
     baseline: dict[float, dict[str, list[float]]] = {
         m: {metric: [] for metric in metrics} for m in magnitudes
     }
-    for i, draw in enumerate(draws):
+    for i, item in enumerate(baseline_items):
         if i % 10 == 0:
-            LOGGER.info("baseline draw %d/%d", i, len(draws))
-        rows, _tok, _cp = run_one_sweep(
-            model, transcoders, input_ids, draw, magnitudes, layers, resolved_token_id, target_pos
-        )
+            LOGGER.info("baseline draw %d/%d", i, len(baseline_items))
+        rows, _tok, _cp = sweep(item, resolved_token_id)
         for row in rows:
             for metric in metrics:
                 baseline[row["magnitude"]][metric].append(row[metric])
@@ -599,11 +874,16 @@ def main() -> None:
             "n_bootstrap": args.n_bootstrap,
             "seed": args.seed,
             "sampling": args.sampling,
+            "match": args.match if args.sampling == "gaussian-direction" else None,
             "min_activation": args.min_activation,
             "match_magnitude_tol": args.match_magnitude_tol,
             "candidate_pool_sizes": pool_sizes,
             "draw_space": draw_info,
-            "steering_mode": "factor_times_clean_activation",
+            "steering_mode": (
+                "residual_write_additive" if gaussian else "factor_times_clean_activation"
+            ),
+            "norm_check": norm_check or None,
+            "real_cell_norms": real_cell_norms or None,
             "target": {
                 "token_id": resolved_token_id,
                 "token": target_token,
@@ -615,7 +895,7 @@ def main() -> None:
             "dtype": str(dtype),
             "elapsed_seconds": time.time() - start,
         },
-        "draws": [[f"{layer}_{feature}_{pos}" for layer, pos, feature in draw] for draw in draws],
+        "draws": draws_serialized,
         "results": results,
     }
     with out_path.open("w", encoding="utf-8") as handle:

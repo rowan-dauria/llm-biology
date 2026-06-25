@@ -166,6 +166,80 @@ class TestTLIntervention(unittest.TestCase):
         )
         self.assertGreater(moved, 1e-4)
 
+    def test_residual_write_zero_is_identity(self):
+        """A zero residual write leaves the local replacement at clean logits."""
+        d_model = self.model.cfg.d_model
+        res = run_feature_intervention(
+            self.model,
+            self.transcoders,
+            self.tokens,
+            interventions=[],
+            layers=self.layers,
+            residual_writes={(1, 0): torch.zeros(d_model)},
+        )
+        torch.testing.assert_close(res.intervened_logits, res.clean_logits, atol=1e-4, rtol=1e-4)
+
+    def test_residual_write_changes_logits(self):
+        """A non-zero residual write perturbs the logits."""
+        d_model = self.model.cfg.d_model
+        torch.manual_seed(7)
+        vec = torch.randn(d_model)
+        res = run_feature_intervention(
+            self.model,
+            self.transcoders,
+            self.tokens,
+            interventions=[],
+            layers=self.layers,
+            residual_writes={(1, self.model.cfg.n_ctx - 1): vec},
+        )
+        self.assertGreater(res.logit_diff().abs().max().item(), 1e-5)
+
+    def test_residual_write_matches_last_layer_feature_clamp(self):
+        """At the last tracked layer (no downstream re-encode) writing
+        ``delta * W_dec[f]`` equals clamping feature ``f`` to ``clean + delta``."""
+        base = self._baseline()
+        last = self.model.cfg.n_layers - 1
+        target = next(
+            key for key, act in base.clean_feature_acts.items() if key[0] == last and act > 1e-3
+        )
+        layer, pos, feat = target
+        clean = base.clean_feature_acts[target]
+        delta = 2.5
+
+        clamp = run_feature_intervention(
+            self.model,
+            self.transcoders,
+            self.tokens,
+            interventions=[
+                FeatureIntervention(layer=layer, pos=pos, feature=feat, value=clean + delta)
+            ],
+            layers=self.layers,
+        )
+        write_vec = delta * self.transcoders[layer].W_dec[feat].detach().float()
+        write = run_feature_intervention(
+            self.model,
+            self.transcoders,
+            self.tokens,
+            interventions=[],
+            layers=self.layers,
+            residual_writes={(layer, pos): write_vec},
+        )
+        torch.testing.assert_close(
+            write.intervened_logits, clamp.intervened_logits, atol=1e-4, rtol=1e-4
+        )
+
+    def test_residual_write_untracked_layer_rejected(self):
+        d_model = self.model.cfg.d_model
+        with self.assertRaises(ValueError):
+            run_feature_intervention(
+                self.model,
+                self.transcoders,
+                self.tokens,
+                interventions=[],
+                layers=[1],  # layer 0 untracked
+                residual_writes={(0, 0): torch.zeros(d_model)},
+            )
+
     def test_value_and_factor_mutually_exclusive(self):
         with self.assertRaises(ValueError):
             FeatureIntervention(layer=0, pos=0, feature=0, value=1.0, factor=2.0)

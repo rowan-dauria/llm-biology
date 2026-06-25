@@ -1,6 +1,8 @@
 #!/bin/bash
 #!
-#! SLURM job script for random size-matched supernode-intervention baselines on Wilkes3 (A100).
+#! SLURM job script for random supernode-intervention baselines on Wilkes3 (A100).
+#! Supports both the other-feature baselines (matched-cell / global-active) and the
+#! matched random-direction baselines (gaussian-direction / gaussian-rotation).
 #! Based on scripts/sweep_supernode_interventions.wilkes3 (itself from slurms/slurm_submit.wilkes3).
 #!
 
@@ -77,12 +79,20 @@ SUPERNODE="${2:-${SUPERNODE:-}}"
 MAGNITUDES="${MAGNITUDES:--2,-1,0,0.5,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7,7.5,8}"
 N_BOOTSTRAP="${N_BOOTSTRAP:-100}"
 SEED="${SEED:-42}"
+#! Baseline family: gaussian-direction (default) | gaussian-rotation | matched-cell | global-active
+SAMPLING="${SAMPLING:-gaussian-direction}"
+#! Norm-matching for gaussian-direction: per-cell (default) | per-feature. Ignored otherwise.
+MATCH="${MATCH:-per-cell}"
 OUTPUT_JSON="${OUTPUT_JSON:-}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 if [ -z "$GRAPH_JSON" ] || [ -z "$SUPERNODE" ]; then
         echo "Usage: sbatch scripts/bootstrap_random_supernode_baseline.wilkes3 <graph-json> <supernode-label>"
-        echo "Optional env: N_BOOTSTRAP=100 SEED=0 MAGNITUDES='-1,0,1,2' OUTPUT_JSON=/path/out.json EXTRA_ARGS='--sampling global-active'"
+        echo "Default baseline: SAMPLING=gaussian-direction MATCH=per-cell (matched random-direction)."
+        echo "Optional env: N_BOOTSTRAP=100 SEED=0 MAGNITUDES='-1,0,1,2' OUTPUT_JSON=/path/out.json"
+        echo "  SAMPLING=gaussian-rotation                   (geometry-preserving random rotation)"
+        echo "  SAMPLING=matched-cell                        (legacy other-feature baseline)"
+        echo "  EXTRA_ARGS='--chat-template'                 (any extra flags passed through)"
         exit 2
 fi
 
@@ -90,7 +100,14 @@ fi
 application="srun"
 
 #! Run options for the application:
-options="python -u scripts/bootstrap_random_supernode_baseline.py \"$GRAPH_JSON\" \"$SUPERNODE\" --magnitudes=\"$MAGNITUDES\" --n-bootstrap=\"$N_BOOTSTRAP\" --seed=\"$SEED\" $EXTRA_ARGS"
+options="python -u scripts/bootstrap_random_supernode_baseline.py \"$GRAPH_JSON\" \"$SUPERNODE\" --magnitudes=\"$MAGNITUDES\" --n-bootstrap=\"$N_BOOTSTRAP\" --seed=\"$SEED\""
+if [ -n "$SAMPLING" ]; then
+        options="$options --sampling \"$SAMPLING\""
+fi
+if [ -n "$MATCH" ]; then
+        options="$options --match \"$MATCH\""
+fi
+options="$options $EXTRA_ARGS"
 if [ -n "$OUTPUT_JSON" ]; then
         options="$options --output \"$OUTPUT_JSON\""
 fi

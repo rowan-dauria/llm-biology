@@ -263,6 +263,7 @@ def run_feature_intervention(
     layers: Sequence[int] | None = None,
     measure_features: Sequence[FeatureKey] = (),
     ablate_all_features_at: Mapping[int, Sequence[int] | None] | None = None,
+    residual_writes: Mapping[tuple[int, int], torch.Tensor] | None = None,
     freeze_attention: bool = True,
     freeze_layernorm: bool = True,
     freeze_untracked_mlp: bool = True,
@@ -285,6 +286,14 @@ def run_feature_intervention(
     untracked MLPs, transcoder skip paths and error terms), so the resulting
     logits are the steerable-ceiling complement ``C_const`` — what the prediction
     rests on with no feature contribution at all.
+
+    ``residual_writes`` adds a fixed vector directly to the MLP output at named
+    ``(layer, pos)`` cells (one ``d_model`` vector per cell), applied *after* the
+    transcoder reconstruction and error term. Unlike a feature clamp, the written
+    direction need not be a decoder vector, so this is the mechanism for the
+    matched random-direction steering baseline: inject ``Σ_f (m-1)·a_f·W_dec[f]``
+    to reproduce the real supernode perturbation, or a norm-matched random vector
+    to control for it. The cell's layer must be tracked.
 
     With ``interventions`` empty and no ablation the intervened pass reproduces
     the clean logits (up to float error) — a useful sanity check that the freezes
@@ -323,6 +332,24 @@ def run_feature_intervention(
         clean_act = float(cap["features"][iv.layer][0, iv.pos, iv.feature].item())
         iv_by_layer.setdefault(iv.layer, []).append((iv.pos, iv.feature, iv.resolve(clean_act)))
 
+    # Group raw residual writes by layer for the out-hook, validating that each
+    # cell lives at a tracked layer and carries a d_model vector.
+    d_model = int(model.cfg.d_model)
+    n_pos = int(input_ids_tensor.shape[1])
+    writes_by_layer: dict[int, list[tuple[int, torch.Tensor]]] = {}
+    for (w_layer, w_pos), vec in (residual_writes or {}).items():
+        if w_layer not in tracked_set:
+            raise ValueError(
+                f"residual_write layer {w_layer} is not tracked; tracked layers: {tracked}"
+            )
+        vec_t = torch.as_tensor(vec)
+        if vec_t.dim() != 1 or vec_t.shape[0] != d_model:
+            raise ValueError(
+                f"residual_write at {(w_layer, w_pos)} must be a 1-D vector of length "
+                f"d_model={d_model}, got shape {tuple(vec_t.shape)}"
+            )
+        writes_by_layer.setdefault(w_layer, []).append((int(w_pos) % n_pos, vec_t))
+
     intervened_features: dict[int, torch.Tensor] = {}
     fwd_hooks: list = []
 
@@ -359,6 +386,7 @@ def run_feature_intervention(
 
     def _iv_out_hook(layer: int):
         transcoder = transcoders[layer]
+        writes_here = writes_by_layer.get(layer, [])
 
         def hook(acts: torch.Tensor, hook: HookPoint) -> torch.Tensor:  # noqa: ARG001
             features = intervened_features[layer]
@@ -368,7 +396,10 @@ def run_feature_intervention(
                     features.to(transcoder.W_dec.dtype),
                     mlp_in if transcoder.W_skip is not None else None,
                 ).to(acts.dtype)
-            return reconstruction + cap["error"][layer].to(device=acts.device, dtype=acts.dtype)
+                out = reconstruction + cap["error"][layer].to(device=acts.device, dtype=acts.dtype)
+                for pos, vec in writes_here:
+                    out[:, pos, :] = out[:, pos, :] + vec.to(device=out.device, dtype=out.dtype)
+            return out
 
         return hook
 
