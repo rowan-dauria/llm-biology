@@ -67,7 +67,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=None, help="output PNG path")
     parser.add_argument(
         "--m-range",
-        default="-1,3",
+        default="-2,8",
         help=(
             "Visible magnitude window 'LO,HI' (auto-padded, y rescaled to the window). "
             "Default '-1,3' keeps the near-distribution causal regime; pass 'full' to "
