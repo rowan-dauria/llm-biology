@@ -32,6 +32,7 @@ from circuit_tracer.transcoder.single_layer_transcoder import (  # noqa: E402
     SingleLayerTranscoder,
 )
 from transformer_lens import HookedTransformer  # noqa: E402
+from transformer_lens.hook_points import HookPoint  # noqa: E402
 
 from biology_server.attribution import (  # noqa: E402
     DEFAULT_LAYERS,
@@ -69,12 +70,17 @@ def build_fidelity_hooks(
     for layer in active_layers:
         tc = transcoders[layer]
 
-        def _in(acts: torch.Tensor, _: object, _l: int = layer) -> torch.Tensor:
+        # TransformerLens invokes forward hooks as hook(tensor, hook=<HookPoint>),
+        # so the second parameter MUST be named `hook` to receive that keyword.
+        def _in(acts: torch.Tensor, hook: HookPoint, _l: int = layer) -> torch.Tensor:  # noqa: ARG001
             mlp_inputs[_l] = acts
             return acts
 
         def _out(
-            acts: torch.Tensor, _: object, _l: int = layer, _tc: SingleLayerTranscoder = tc
+            acts: torch.Tensor,
+            hook: HookPoint,
+            _l: int = layer,
+            _tc: SingleLayerTranscoder = tc,  # noqa: ARG001
         ) -> torch.Tensor:
             inp = mlp_inputs[_l]
             feats = _tc.encode(inp)
