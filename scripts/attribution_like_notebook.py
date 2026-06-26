@@ -75,6 +75,8 @@ def setup_logging(log_file: Path, *, level: int = logging.DEBUG) -> None:
         handlers=handlers,
         force=True,
     )
+    for noisy_logger in ("fsspec", "huggingface_hub", "urllib3", "filelock"):
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
     LOGGER.debug("Logging to %s", log_file)
 
 
@@ -155,6 +157,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--logit-prob-threshold", type=float, default=DEFAULT_LOGIT_PROB_THRESHOLD)
     parser.add_argument("--max-logit-nodes", type=int, default=DEFAULT_MAX_LOGIT_NODES)
     parser.add_argument(
+        "--skip-preview-tl-parity-check",
+        action="store_true",
+        help="Warn instead of failing when the HF preview and TL forward disagree on top-token probability.",
+    )
+    parser.add_argument(
         "--topk-dir",
         type=Path,
         default=DEFAULT_TOPK_DIR,
@@ -178,6 +185,22 @@ def parse_args() -> argparse.Namespace:
         help="Save a compact .pt copy; pass a path or omit the value for auto.",
     )
     parser.add_argument("--model-id", default=MODEL_ID)
+    parser.add_argument(
+        "--tl-model-id",
+        default=None,
+        help=(
+            "TransformerLens architecture/config model name. Use this when "
+            "--model-id points at a local merged checkpoint of a supported base model."
+        ),
+    )
+    parser.add_argument(
+        "--tokenizer-id",
+        default=None,
+        help=(
+            "Tokenizer source. Use this when --model-id points at a local checkpoint "
+            "whose tokenizer files are missing or incompatible."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--preview-top-k", type=int, default=10)
     return parser.parse_args()
@@ -201,6 +224,9 @@ def main() -> None:
     LOGGER.info("prompt=%r", args.prompt)
     LOGGER.info("slug=%s", slug)
     LOGGER.info("output_dir=%s", output_dir)
+    LOGGER.info("model_id=%s", args.model_id)
+    LOGGER.info("tl_model_id=%s", args.tl_model_id or args.model_id)
+    LOGGER.info("tokenizer_id=%s", args.tokenizer_id or args.model_id)
     LOGGER.info("use_chat_template=%s", use_chat_template)
     LOGGER.info("=" * 70)
 
@@ -229,6 +255,8 @@ def main() -> None:
     runner = attribution_module.BiologyAttributionRunner(
         layers=layers,
         model_id=args.model_id,
+        tl_model_id=args.tl_model_id,
+        tokenizer_id=args.tokenizer_id,
         graph_file_dir=output_dir,
         batch_size=args.batch_size,
         max_feature_nodes=args.max_feature_nodes,
@@ -275,6 +303,7 @@ def main() -> None:
         edge_threshold=args.edge_threshold,
         logit_prob_threshold=args.logit_prob_threshold,
         max_logit_nodes=args.max_logit_nodes,
+        skip_preview_tl_parity_check=args.skip_preview_tl_parity_check,
         use_chat_template=use_chat_template,
         save_pt=args.save_pt,
     )
