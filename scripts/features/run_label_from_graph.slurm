@@ -1,34 +1,29 @@
 #!/bin/bash
 #!
-#! SLURM array job: label features per layer with Gemma 3 12B in transformers.
-#! Each array task picks one layer from LAYERS, runs label_features.py against
-#! the corresponding topk_layer_*.pt, and writes data/feature_labels/layer_<L>.jsonl.
+#! SLURM job: label graph-surfaced unlabelled features then patch the graph JSON.
+#! Driven by env vars (with defaults):
+#!   SLUG       slug of the graph under data/ui_graphs/<slug>.json   (required)
+#!   TOP_N      cap on features labelled this run                     (default: unset = no cap)
+#!   ALPHA      target-effect vs centrality weighting in [0, 1]       (default: 0.5)
+#!   PROVIDER   transformers | ollama | openai | anthropic            (default: transformers)
+#!   MODEL      provider model override                                (default: provider's default)
 #!
 
 #! sbatch directives begin here ###############################
-#SBATCH -J label_feats
+#SBATCH -J label_from_graph
 #SBATCH -A MPHIL-DIS-SL2-GPU
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
 #SBATCH --time=00:20:00
-#SBATCH --array=0-3
 #SBATCH --mail-type=NONE
-#SBATCH -o /home/rd761/mphil-project/llm-biology/slurm_logs/label_feats-%A_%a.out
-#SBATCH -e /home/rd761/mphil-project/llm-biology/slurm_logs/label_feats-%A_%a.err
+#SBATCH -o /home/rd761/mphil-project/llm-biology/slurm_logs/label_from_graph-%j.out
+#SBATCH -e /home/rd761/mphil-project/llm-biology/slurm_logs/label_from_graph-%j.err
 
 #! Do not change:
 #SBATCH -p ampere
 
 #! sbatch directives end here
-
-# ============
-# How many LLMs to label features in parallel
-CONCURRENCY=6
-# LLM to use for labelling
-MODEL="google/gemma-3-12b-it"
-# ============
-
 
 numnodes=$SLURM_JOB_NUM_NODES
 numtasks=$SLURM_NTASKS
@@ -58,20 +53,20 @@ PROJECT_ROOT="/home/rd761/mphil-project/llm-biology"
 LOG_DIR="$PROJECT_ROOT/slurm_logs"
 mkdir -p "$LOG_DIR"
 
-LAYERS=(2 12 24 33)
-LAYER=${LAYERS[$SLURM_ARRAY_TASK_ID]}
-if [ -z "$LAYER" ]; then
-    echo "ERROR: SLURM_ARRAY_TASK_ID=$SLURM_ARRAY_TASK_ID has no LAYERS entry" >&2
+if [ -z "${SLUG:-}" ]; then
+    echo "ERROR: SLUG env var is required (e.g. sbatch --export=ALL,SLUG=my-graph scripts/features/run_label_from_graph.slurm)" >&2
     exit 1
 fi
+
+ALPHA="${ALPHA:-0.5}"
+PROVIDER="${PROVIDER:-transformers}"
 
 workdir="$SLURM_SUBMIT_DIR"
 cd "$workdir"
 echo -e "Changed directory to $(pwd).\n"
 
 JOBID=$SLURM_JOB_ID
-ARRAY_JOB="${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
-echo -e "JobID: $JOBID  Array: $ARRAY_JOB  Layer: $LAYER\n======"
+echo -e "JobID: $JOBID  Slug: $SLUG  Provider: $PROVIDER  Alpha: $ALPHA  Top_n: ${TOP_N:-(none)}\n======"
 echo "Time: $(date)"
 echo "Running on master node: $(hostname)"
 echo "Current directory: $(pwd)"
@@ -86,9 +81,13 @@ fi
 
 echo -e "\nnumtasks=$numtasks, numnodes=$numnodes, mpi_tasks_per_node=$mpi_tasks_per_node (OMP_NUM_THREADS=$OMP_NUM_THREADS)"
 
-srun python -u "$PROJECT_ROOT/feature_lookup/label_features.py" \
-    --layer "$LAYER" \
-    --topk-dir "$PROJECT_ROOT/data/feature_topk/150k-pile" \
-    --provider transformers \
-    --model "$MODEL" \
-    --concurrency $CONCURRENCY
+CMD=(python -u "$PROJECT_ROOT/scripts/features/label_from_graph.py" --slug "$SLUG" --alpha "$ALPHA" --provider "$PROVIDER")
+if [ -n "${TOP_N:-}" ]; then
+    CMD+=(--top_n "$TOP_N")
+fi
+if [ -n "${MODEL:-}" ]; then
+    CMD+=(--model "$MODEL")
+fi
+
+echo "Running: ${CMD[*]}"
+srun "${CMD[@]}"

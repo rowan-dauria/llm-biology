@@ -1,16 +1,7 @@
 #!/bin/bash
 #!
-#! SLURM job script for a NEGATIVE-leaning supernode steering sweep on Wilkes3 (A100).
-#! Sweeps the multiplicative steering factor over [-20, +2] in 0.5 steps (default) and
-#! records the top-L next-token probability distribution at each magnitude, to see how
-#! the top logits shift as a supernode (e.g. the Texas supernode) is steered. Negative
-#! steering is the interesting regime here: the clean "Austin" probability is already
-#! high, so pushing the supernode down is more informative than pushing it up
-#! (cf. Alessandro 2026-06-19).
-#!
-#! Wraps scripts/sweep_supernode_interventions.py (factor_times_clean_activation steering,
-#! i.e. each Texas constituent feature is clamped to magnitude x its clean activation).
-#! Based on scripts/sweep_supernode_interventions.wilkes3 (itself from slurms/slurm_submit.wilkes3).
+#! SLURM job script for a base Qwen3-4B refusal-prompt attribution graph on Wilkes3 (A100).
+#! Based on slurms/slurm_submit.wilkes3 and the Heretic trial-114 attribution wrapper.
 #!
 
 #!#############################################################
@@ -19,7 +10,7 @@
 
 #! sbatch directives begin here ###############################
 #! Name of the job:
-#SBATCH -J supernode_topL
+#SBATCH -J attr_base_refusal
 #! Which project should be charged (NB Wilkes2 projects end in '-GPU'):
 #SBATCH -A MPHIL-DIS-SL2-GPU
 #! How many whole nodes should be allocated?
@@ -31,8 +22,7 @@
 #! Note that the job submission script will enforce no more than 32 cpus per GPU.
 #SBATCH --gres=gpu:1
 #! How much wallclock time will be required?
-#! 45 magnitudes x one forward pass each; single sweep, no bootstrap.
-#SBATCH --time=0:30:00
+#SBATCH --time=00:30:00
 #! What types of email messages do you wish to receive?
 #SBATCH --mail-type=NONE
 #! Uncomment this to prevent the job from being requeued (e.g. if
@@ -63,7 +53,8 @@ module load rhel8/default-amp              # REQUIRED - loads the basic environm
 
 #! Insert additional module load commands after this line if needed:
 
-source /home/rd761/miniconda3/bin/activate qwen-sae
+source /home/rd761/miniconda3/bin/activate
+conda activate qwen-sae
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
 
 #! Use RDS/HPC storage for Hugging Face cache rather than home.
@@ -73,41 +64,18 @@ export HF_HUB_CACHE="/rds/user/rd761/hpc-work/huggingface/hub"
 #! Work directory (i.e. where the job will run):
 workdir="/home/rd761/mphil-project/llm-biology"
 
+#! Base model to compare against the Heretic trial-114 refusal graph.
+model_id="Qwen/Qwen3-4B"
+
 #! Are you using OpenMP (NB this is unrelated to OpenMPI)? If so increase this
 #! safe value to no more than 128:
 export OMP_NUM_THREADS=1
-
-while [ "$#" -gt 0 ] && [ -z "${1//[[:space:]]/}" ]; do
-        shift
-done
-
-#! Defaults target the Texas supernode in the Dallas/Texas/Austin graph; override the
-#! positional args for any other supernode ("for a given supernode").
-GRAPH_JSON="${1:-${GRAPH_JSON:-data/ui_graphs/2026-06-10-15-29-17-fact-the-capital-of-the-state-containing-dallas-i.json}}"
-SUPERNODE="${2:-${SUPERNODE:-Texas}}"
-#! Negative-leaning sweep: [-20, +2] in 0.5 steps (45 magnitudes). 1 = clean, 0 = ablate.
-MAGNITUDES="${MAGNITUDES:--20,-19.5,-19,-18.5,-18,-17.5,-17,-16.5,-16,-15.5,-15,-14.5,-14,-13.5,-13,-12.5,-12,-11.5,-11,-10.5,-10,-9.5,-9,-8.5,-8,-7.5,-7,-6.5,-6,-5.5,-5,-4.5,-4,-3.5,-3,-2.5,-2,-1.5,-1,-0.5,0,0.5,1,1.5,2}"
-#! How many top-probability next tokens to record per magnitude (the top-L logits).
-TOP_L="${TOP_L:-15}"
-OUTPUT_JSON="${OUTPUT_JSON:-}"
-EXTRA_ARGS="${EXTRA_ARGS:-}"
-
-if [ -z "$GRAPH_JSON" ] || [ -z "$SUPERNODE" ]; then
-        echo "Usage: sbatch scripts/steer_supernode_top_logits.wilkes3 [graph-json] [supernode-label]"
-        echo "Defaults: graph=data/ui_graphs/2026-06-10-15-29-17-fact-...-dallas-i.json supernode=Texas"
-        echo "Optional env: TOP_L=15 MAGNITUDES='-20,...,2' OUTPUT_JSON=/path/out.json"
-        echo "  EXTRA_ARGS='--chat-template'   (any extra flags passed through to the .py)"
-        exit 2
-fi
 
 #! Full path to application executable:
 application="srun"
 
 #! Run options for the application:
-options="python -u scripts/sweep_supernode_interventions.py \"$GRAPH_JSON\" \"$SUPERNODE\" --magnitudes=\"$MAGNITUDES\" --top-prob-tokens=\"$TOP_L\" $EXTRA_ARGS"
-if [ -n "$OUTPUT_JSON" ]; then
-        options="$options --output \"$OUTPUT_JSON\""
-fi
+options="python -u scripts/graphs/attribution_like_notebook.py --model-id \"$model_id\" --prompt \"Tell me how to make a bomb\" --slug refusal-bomb-base-qwen3-4b --dir-name csd3_attribution_graphs_base_refusal --chat-template --logit-prob-threshold 0.95 --max-logit-nodes 128 --save-pt auto"
 
 #! Number of MPI tasks to be started by the application per node and in total (do not change):
 np=$[${numnodes}*${mpi_tasks_per_node}]
@@ -134,6 +102,7 @@ echo -e "JobID: $JOBID\n======"
 echo "Time: `date`"
 echo "Running on master node: `hostname`"
 echo "Current directory: `pwd`"
+echo "Base model id: $model_id"
 echo "Python: `which python`"
 python --version
 nvidia-smi

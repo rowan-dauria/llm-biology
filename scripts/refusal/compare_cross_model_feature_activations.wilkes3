@@ -1,6 +1,6 @@
 #!/bin/bash
 #!
-#! SLURM job script for the steerable-ceiling coverage diagnostic on Wilkes3 (A100).
+#! SLURM job script for cross-model feature-activation comparison on Wilkes3 (A100).
 #! Based on slurms/slurm_submit.wilkes3.
 #!
 
@@ -10,7 +10,7 @@
 
 #! sbatch directives begin here ###############################
 #! Name of the job:
-#SBATCH -J steerable_ceiling
+#SBATCH -J feat_cmp
 #! Which project should be charged (NB Wilkes2 projects end in '-GPU'):
 #SBATCH -A MPHIL-DIS-SL2-GPU
 #! How many whole nodes should be allocated?
@@ -22,7 +22,7 @@
 #! Note that the job submission script will enforce no more than 32 cpus per GPU.
 #SBATCH --gres=gpu:1
 #! How much wallclock time will be required?
-#SBATCH --time=0:20:00
+#SBATCH --time=01:00:00
 #! What types of email messages do you wish to receive?
 #SBATCH --mail-type=NONE
 #! Uncomment this to prevent the job from being requeued (e.g. if
@@ -53,12 +53,30 @@ module load rhel8/default-amp              # REQUIRED - loads the basic environm
 
 #! Insert additional module load commands after this line if needed:
 
-source /home/rd761/miniconda3/bin/activate qwen-sae
+source /home/rd761/miniconda3/bin/activate
+conda activate qwen-sae
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
 
 #! Use RDS/HPC storage for Hugging Face cache rather than home.
 export HF_HOME="/rds/user/rd761/hpc-work/huggingface"
 export HF_HUB_CACHE="/rds/user/rd761/hpc-work/huggingface/hub"
+
+#! Human-curated feature panel. Override at submission time, e.g.
+#! FEATURE_PANEL=/home/rd761/.../base_refusal_panel.json sbatch scripts/refusal/compare_cross_model_feature_activations.wilkes3
+feature_panel="${FEATURE_PANEL:-/home/rd761/mphil-project/llm-biology/data/base_jailbreak_comparison/feature_panel.json}"
+source_model_id="${SOURCE_MODEL_ID:-Qwen/Qwen3-4B}"
+comparison_model_id="${COMPARISON_MODEL_ID:-/rds/user/rd761/hpc-work/models/CHANGE_ME_JAILBROKEN_MERGED}"
+direction="${DIRECTION:-base_to_jailbroken}"
+prompt_format="${PROMPT_FORMAT:-chat}"
+output_dir="${OUTPUT_DIR:-/home/rd761/mphil-project/llm-biology/data/base_jailbreak_comparison}"
+
+extra_options=""
+if [ -n "${PROMPT:-}" ]; then
+        extra_options="$extra_options --prompt \"$PROMPT\""
+fi
+if [ -n "${LAYERS:-}" ]; then
+        extra_options="$extra_options --layers \"$LAYERS\""
+fi
 
 #! Work directory (i.e. where the job will run):
 workdir="/home/rd761/mphil-project/llm-biology"
@@ -67,29 +85,11 @@ workdir="/home/rd761/mphil-project/llm-biology"
 #! safe value to no more than 128:
 export OMP_NUM_THREADS=1
 
-while [ "$#" -gt 0 ] && [ -z "${1//[[:space:]]/}" ]; do
-        shift
-done
-
-GRAPH_JSON="${1:-${GRAPH_JSON:-}}"
-SUPERNODE="${2:-${SUPERNODE:-}}"
-OUTPUT_JSON="${OUTPUT_JSON:-}"
-EXTRA_ARGS="${EXTRA_ARGS:-}"
-
-if [ -z "$GRAPH_JSON" ] || [ -z "$SUPERNODE" ]; then
-        echo "Usage: sbatch scripts/steerable_ceiling.wilkes3 <graph-json> <supernode-label>"
-        echo "Optional env: OUTPUT_JSON=/path/out.json EXTRA_ARGS='--layers 2,12,24,33 --chat-template'"
-        exit 2
-fi
-
 #! Full path to application executable:
 application="srun"
 
 #! Run options for the application:
-options="python -u scripts/steerable_ceiling.py \"$GRAPH_JSON\" \"$SUPERNODE\" $EXTRA_ARGS"
-if [ -n "$OUTPUT_JSON" ]; then
-        options="$options --output \"$OUTPUT_JSON\""
-fi
+options="python -u scripts/refusal/compare_cross_model_feature_activations.py \"$feature_panel\" --source-model-id \"$source_model_id\" --comparison-model-id \"$comparison_model_id\" --prompt-format \"$prompt_format\" --direction \"$direction\" --output-dir \"$output_dir\" $extra_options"
 
 #! Number of MPI tasks to be started by the application per node and in total (do not change):
 np=$[${numnodes}*${mpi_tasks_per_node}]

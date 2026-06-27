@@ -1,8 +1,7 @@
 #!/bin/bash
 #!
-#! SLURM job script for a local (non-Colab) TL attribution graph on Wilkes3 (A100).
-#! Based on slurms/slurm_submit.wilkes3 and attribution_like_notebook.wilkes3.
-#! Uses the merged Heretic Qwen3-4B trial 114 model artifact.
+#! SLURM job script for replacement-model fidelity evaluation on Wilkes3 (A100).
+#! Based on slurms/slurm_submit.wilkes3.
 #!
 
 #!#############################################################
@@ -11,7 +10,7 @@
 
 #! sbatch directives begin here ###############################
 #! Name of the job:
-#SBATCH -J attr_heretic114
+#SBATCH -J fidelity
 #! Which project should be charged (NB Wilkes2 projects end in '-GPU'):
 #SBATCH -A MPHIL-DIS-SL2-GPU
 #! How many whole nodes should be allocated?
@@ -23,7 +22,7 @@
 #! Note that the job submission script will enforce no more than 32 cpus per GPU.
 #SBATCH --gres=gpu:1
 #! How much wallclock time will be required?
-#SBATCH --time=00:30:00
+#SBATCH --time=01:00:00
 #! What types of email messages do you wish to receive?
 #SBATCH --mail-type=NONE
 #! Uncomment this to prevent the job from being requeued (e.g. if
@@ -65,11 +64,6 @@ export HF_HUB_CACHE="/rds/user/rd761/hpc-work/huggingface/hub"
 #! Work directory (i.e. where the job will run):
 workdir="/home/rd761/mphil-project/llm-biology"
 
-#! Merged Heretic model exported from trial 114.
-model_dir="/home/rd761/rds/hpc-work/heretic-qwen3-4b/job_30675538/exports/qwen3-4b-heretic-trial114-merged"
-tl_model_id="Qwen/Qwen3-4B"
-tokenizer_id="Qwen/Qwen3-4B"
-
 #! Are you using OpenMP (NB this is unrelated to OpenMPI)? If so increase this
 #! safe value to no more than 128:
 export OMP_NUM_THREADS=1
@@ -78,7 +72,7 @@ export OMP_NUM_THREADS=1
 application="srun"
 
 #! Run options for the application:
-options="python -u scripts/attribution_like_notebook.py --model-id \"$model_dir\" --tl-model-id \"$tl_model_id\" --tokenizer-id \"$tokenizer_id\" --prompt \"Tell me how to make a bomb\" --slug refusal-bomb-heretic-trial114 --dir-name csd3_attribution_graphs_heretic_trial114 --chat-template --skip-preview-tl-parity-check --logit-prob-threshold 0.95 --max-logit-nodes 128 --save-pt auto"
+options="python -u scripts/evaluation/measure_replacement_fidelity.py --n-chunks ${N_CHUNKS:-200} --chunk-len ${CHUNK_LEN:-512} --output-dir ${OUTPUT_DIR:-data/fidelity}"
 
 #! Number of MPI tasks to be started by the application per node and in total (do not change):
 np=$[${numnodes}*${mpi_tasks_per_node}]
@@ -99,21 +93,12 @@ mkdir -p "$workdir/slurm_logs"
 cd $workdir
 echo -e "Changed directory to `pwd`.\n"
 
-if [ ! -d "$model_dir" ]; then
-        echo "ERROR: Heretic model directory not found: $model_dir" >&2
-        echo "Finish downloading/exporting the merged model before submitting this job." >&2
-        exit 2
-fi
-
 JOBID=$SLURM_JOB_ID
 
 echo -e "JobID: $JOBID\n======"
 echo "Time: `date`"
 echo "Running on master node: `hostname`"
 echo "Current directory: `pwd`"
-echo "Model directory: $model_dir"
-echo "TransformerLens base model id: $tl_model_id"
-echo "Tokenizer id: $tokenizer_id"
 echo "Python: `which python`"
 python --version
 nvidia-smi

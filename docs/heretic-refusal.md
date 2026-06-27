@@ -29,7 +29,7 @@ that local model directory.
 The current report-facing wrapper is:
 
 ```bash
-sbatch scripts/attribution_like_notebook_heretic_trial114.wilkes3
+sbatch scripts/refusal/attribution_like_notebook_heretic_trial114.wilkes3
 ```
 
 That wrapper uses the merged Heretic checkpoint as `--model-id`, the base
@@ -37,13 +37,13 @@ That wrapper uses the merged Heretic checkpoint as `--model-id`, the base
 `--tokenizer-id`. The base-model comparison graph uses:
 
 ```bash
-sbatch scripts/attribution_like_notebook_base_refusal.wilkes3
+sbatch scripts/refusal/attribution_like_notebook_base_refusal.wilkes3
 ```
 
 Then compare graph-surfaced feature activations with:
 
 ```bash
-sbatch scripts/compare_cross_model_feature_activations.wilkes3
+sbatch scripts/refusal/compare_cross_model_feature_activations.wilkes3
 ```
 
 The generated graph JSONs and comparison outputs belong in the root project data

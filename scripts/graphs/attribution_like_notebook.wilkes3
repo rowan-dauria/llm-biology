@@ -72,7 +72,7 @@ export OMP_NUM_THREADS=1
 application="srun"
 
 #! Run options for the application:
-options='python -u scripts/attribution_like_notebook.py --prompt "Fact: the capital of the state containing Dallas is" --dir-name csd3_attribution_graphs'
+options='python -u scripts/graphs/attribution_like_notebook.py --prompt "Fact: the capital of the state containing Dallas is" --dir-name csd3_attribution_graphs'
 
 #! Number of MPI tasks to be started by the application per node and in total (do not change):
 np=$[${numnodes}*${mpi_tasks_per_node}]

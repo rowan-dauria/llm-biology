@@ -1,7 +1,16 @@
 #!/bin/bash
 #!
-#! SLURM job script for cross-model feature-activation comparison on Wilkes3 (A100).
-#! Based on slurms/slurm_submit.wilkes3.
+#! SLURM job script for a NEGATIVE-leaning supernode steering sweep on Wilkes3 (A100).
+#! Sweeps the multiplicative steering factor over [-20, +2] in 0.5 steps (default) and
+#! records the top-L next-token probability distribution at each magnitude, to see how
+#! the top logits shift as a supernode (e.g. the Texas supernode) is steered. Negative
+#! steering is the interesting regime here: the clean "Austin" probability is already
+#! high, so pushing the supernode down is more informative than pushing it up
+#! (cf. Alessandro 2026-06-19).
+#!
+#! Wraps scripts/interventions/sweep_supernode_interventions.py (factor_times_clean_activation steering,
+#! i.e. each Texas constituent feature is clamped to magnitude x its clean activation).
+#! Based on scripts/interventions/sweep_supernode_interventions.wilkes3 (itself from slurms/slurm_submit.wilkes3).
 #!
 
 #!#############################################################
@@ -10,7 +19,7 @@
 
 #! sbatch directives begin here ###############################
 #! Name of the job:
-#SBATCH -J feat_cmp
+#SBATCH -J supernode_topL
 #! Which project should be charged (NB Wilkes2 projects end in '-GPU'):
 #SBATCH -A MPHIL-DIS-SL2-GPU
 #! How many whole nodes should be allocated?
@@ -22,7 +31,8 @@
 #! Note that the job submission script will enforce no more than 32 cpus per GPU.
 #SBATCH --gres=gpu:1
 #! How much wallclock time will be required?
-#SBATCH --time=01:00:00
+#! 45 magnitudes x one forward pass each; single sweep, no bootstrap.
+#SBATCH --time=0:30:00
 #! What types of email messages do you wish to receive?
 #SBATCH --mail-type=NONE
 #! Uncomment this to prevent the job from being requeued (e.g. if
@@ -53,30 +63,12 @@ module load rhel8/default-amp              # REQUIRED - loads the basic environm
 
 #! Insert additional module load commands after this line if needed:
 
-source /home/rd761/miniconda3/bin/activate
-conda activate qwen-sae
+source /home/rd761/miniconda3/bin/activate qwen-sae
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
 
 #! Use RDS/HPC storage for Hugging Face cache rather than home.
 export HF_HOME="/rds/user/rd761/hpc-work/huggingface"
 export HF_HUB_CACHE="/rds/user/rd761/hpc-work/huggingface/hub"
-
-#! Human-curated feature panel. Override at submission time, e.g.
-#! FEATURE_PANEL=/home/rd761/.../base_refusal_panel.json sbatch scripts/compare_cross_model_feature_activations.wilkes3
-feature_panel="${FEATURE_PANEL:-/home/rd761/mphil-project/llm-biology/data/base_jailbreak_comparison/feature_panel.json}"
-source_model_id="${SOURCE_MODEL_ID:-Qwen/Qwen3-4B}"
-comparison_model_id="${COMPARISON_MODEL_ID:-/rds/user/rd761/hpc-work/models/CHANGE_ME_JAILBROKEN_MERGED}"
-direction="${DIRECTION:-base_to_jailbroken}"
-prompt_format="${PROMPT_FORMAT:-chat}"
-output_dir="${OUTPUT_DIR:-/home/rd761/mphil-project/llm-biology/data/base_jailbreak_comparison}"
-
-extra_options=""
-if [ -n "${PROMPT:-}" ]; then
-        extra_options="$extra_options --prompt \"$PROMPT\""
-fi
-if [ -n "${LAYERS:-}" ]; then
-        extra_options="$extra_options --layers \"$LAYERS\""
-fi
 
 #! Work directory (i.e. where the job will run):
 workdir="/home/rd761/mphil-project/llm-biology"
@@ -85,11 +77,37 @@ workdir="/home/rd761/mphil-project/llm-biology"
 #! safe value to no more than 128:
 export OMP_NUM_THREADS=1
 
+while [ "$#" -gt 0 ] && [ -z "${1//[[:space:]]/}" ]; do
+        shift
+done
+
+#! Defaults target the Texas supernode in the Dallas/Texas/Austin graph; override the
+#! positional args for any other supernode ("for a given supernode").
+GRAPH_JSON="${1:-${GRAPH_JSON:-data/ui_graphs/2026-06-10-15-29-17-fact-the-capital-of-the-state-containing-dallas-i.json}}"
+SUPERNODE="${2:-${SUPERNODE:-Texas}}"
+#! Negative-leaning sweep: [-20, +2] in 0.5 steps (45 magnitudes). 1 = clean, 0 = ablate.
+MAGNITUDES="${MAGNITUDES:--20,-19.5,-19,-18.5,-18,-17.5,-17,-16.5,-16,-15.5,-15,-14.5,-14,-13.5,-13,-12.5,-12,-11.5,-11,-10.5,-10,-9.5,-9,-8.5,-8,-7.5,-7,-6.5,-6,-5.5,-5,-4.5,-4,-3.5,-3,-2.5,-2,-1.5,-1,-0.5,0,0.5,1,1.5,2}"
+#! How many top-probability next tokens to record per magnitude (the top-L logits).
+TOP_L="${TOP_L:-15}"
+OUTPUT_JSON="${OUTPUT_JSON:-}"
+EXTRA_ARGS="${EXTRA_ARGS:-}"
+
+if [ -z "$GRAPH_JSON" ] || [ -z "$SUPERNODE" ]; then
+        echo "Usage: sbatch scripts/interventions/steer_supernode_top_logits.wilkes3 [graph-json] [supernode-label]"
+        echo "Defaults: graph=data/ui_graphs/2026-06-10-15-29-17-fact-...-dallas-i.json supernode=Texas"
+        echo "Optional env: TOP_L=15 MAGNITUDES='-20,...,2' OUTPUT_JSON=/path/out.json"
+        echo "  EXTRA_ARGS='--chat-template'   (any extra flags passed through to the .py)"
+        exit 2
+fi
+
 #! Full path to application executable:
 application="srun"
 
 #! Run options for the application:
-options="python -u scripts/compare_cross_model_feature_activations.py \"$feature_panel\" --source-model-id \"$source_model_id\" --comparison-model-id \"$comparison_model_id\" --prompt-format \"$prompt_format\" --direction \"$direction\" --output-dir \"$output_dir\" $extra_options"
+options="python -u scripts/interventions/sweep_supernode_interventions.py \"$GRAPH_JSON\" \"$SUPERNODE\" --magnitudes=\"$MAGNITUDES\" --top-prob-tokens=\"$TOP_L\" $EXTRA_ARGS"
+if [ -n "$OUTPUT_JSON" ]; then
+        options="$options --output \"$OUTPUT_JSON\""
+fi
 
 #! Number of MPI tasks to be started by the application per node and in total (do not change):
 np=$[${numnodes}*${mpi_tasks_per_node}]

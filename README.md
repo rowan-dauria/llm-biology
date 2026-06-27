@@ -15,7 +15,8 @@ pruning, interventions, labels, and exports are project code.
   Neuronpedia-compatible graph viewer.
 - `feature_lookup/`: top-K activation collection, window reconstruction,
   LLM labelling, and graph-label patching.
-- `scripts/`: CSD3 wrappers and final report analysis scripts.
+- `scripts/`: themed CSD3 wrappers and final report analysis scripts; see
+  `scripts/README.md`.
 - `data/neuronpedia-schemas/`: canonical frontend export schemas; do not edit
   them to fit new output.
 
@@ -38,13 +39,13 @@ pre-commit install
 Generate a graph on CSD3 with the notebook-equivalent runner:
 
 ```bash
-sbatch scripts/attribution_like_notebook.wilkes3
+sbatch scripts/graphs/attribution_like_notebook.wilkes3
 ```
 
 The direct Python entry point is:
 
 ```bash
-python scripts/attribution_like_notebook.py \
+python scripts/graphs/attribution_like_notebook.py \
   --prompt "Fact: the capital of the state containing Dallas is" \
   --dir-name csd3_attribution_graphs
 ```
@@ -57,9 +58,9 @@ pass `--chat-template` for refusal/chat cases.
 Build top-K activation windows, then label and patch graph-surfaced features:
 
 ```bash
-sbatch scripts/run_build_topk.slurm
-sbatch scripts/run_label_features.slurm
-SLUG=<graph-slug> sbatch scripts/run_label_from_graph.slurm
+sbatch scripts/features/run_build_topk.slurm
+sbatch scripts/features/run_label_features.slurm
+SLUG=<graph-slug> sbatch scripts/features/run_label_from_graph.slurm
 ```
 
 Top-K and label outputs are generated under `data/` at runtime and are ignored
@@ -84,19 +85,19 @@ The viewer expects the circuit-tracer frontend assets in a sibling
 Final-method wrappers:
 
 ```bash
-sbatch scripts/run_replacement_fidelity.slurm
-sbatch scripts/sweep_supernode_interventions.wilkes3 <graph.json> Texas
-sbatch scripts/bootstrap_random_supernode_baseline.wilkes3 <graph.json> Texas
-sbatch scripts/steerable_ceiling.wilkes3 <graph.json> Texas
-sbatch scripts/steer_supernode_top_logits.wilkes3 <graph.json> Texas
+sbatch scripts/evaluation/run_replacement_fidelity.slurm
+sbatch scripts/interventions/sweep_supernode_interventions.wilkes3 <graph.json> Texas
+sbatch scripts/interventions/bootstrap_random_supernode_baseline.wilkes3 <graph.json> Texas
+sbatch scripts/interventions/steerable_ceiling.wilkes3 <graph.json> Texas
+sbatch scripts/interventions/steer_supernode_top_logits.wilkes3 <graph.json> Texas
 ```
 
 Plot helpers consume the JSON outputs:
 
 ```bash
-python scripts/plot_odds_vs_steering.py <baseline.json> <sweep.json>
-python scripts/plot_steering_top_logits.py <sweep.json>
-python scripts/plot_intervention_comparison.py <sweep-a.json> <sweep-b.json> --output out.png
+python scripts/figures/plot_odds_vs_steering.py <baseline.json> <sweep.json>
+python scripts/figures/plot_steering_top_logits.py <sweep.json>
+python scripts/figures/plot_intervention_comparison.py <sweep-a.json> <sweep-b.json> --output out.png
 ```
 
 ## Heretic Refusal Runs
@@ -106,9 +107,9 @@ The Heretic changes are kept as a companion fork, not vendored here. See
 The submission repo contains the graph/comparison wrappers:
 
 ```bash
-sbatch scripts/attribution_like_notebook_base_refusal.wilkes3
-sbatch scripts/attribution_like_notebook_heretic_trial114.wilkes3
-sbatch scripts/compare_cross_model_feature_activations.wilkes3
+sbatch scripts/refusal/attribution_like_notebook_base_refusal.wilkes3
+sbatch scripts/refusal/attribution_like_notebook_heretic_trial114.wilkes3
+sbatch scripts/refusal/compare_cross_model_feature_activations.wilkes3
 ```
 
 ## Tests
@@ -117,11 +118,11 @@ Do not run the full test suite on a laptop; several tests can load sizeable
 models. Submit the CSD3 wrapper instead:
 
 ```bash
-sbatch scripts/run_tests.wilkes3
+sbatch scripts/evaluation/run_tests.wilkes3
 ```
 
 To narrow the run:
 
 ```bash
-PYTEST_ARGS="tests/test_biology_server.py -q" sbatch scripts/run_tests.wilkes3
+PYTEST_ARGS="tests/test_biology_server.py -q" sbatch scripts/evaluation/run_tests.wilkes3
 ```
