@@ -9,8 +9,8 @@ import torch.nn as nn
 from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTranscoder
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 
-from biology_server_t_lens.tl_freeze import install_freezes
-from biology_server_t_lens.tl_intervention import (
+from biology_server.tl_freeze import install_freezes
+from biology_server.tl_intervention import (
     FeatureIntervention,
     run_feature_intervention,
 )

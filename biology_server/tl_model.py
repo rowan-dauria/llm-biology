@@ -15,8 +15,8 @@ import torch
 from transformer_lens import HookedTransformer
 from transformers import AutoModelForCausalLM
 
-from biology_server_t_lens.memory_profile import memory_checkpoint, memory_profile_call
-from biology_server_t_lens.tl_freeze import install_freezes
+from biology_server.memory_profile import memory_checkpoint, memory_profile_call
+from biology_server.tl_freeze import install_freezes
 
 
 def load_replacement_model(
@@ -30,9 +30,8 @@ def load_replacement_model(
     """Load a HookedTransformer and install linearisation freezes.
 
     ``model_id`` is anything ``HookedTransformer.from_pretrained`` accepts (e.g.
-    ``"Qwen/Qwen3-4B"``). ``cache_dir`` is forwarded as ``hf_model`` cache via
-    ``HookedTransformer`` ignoring it — set ``HF_HOME`` in the environment for
-    true cache control. Accepted here for symmetry with the legacy backend.
+    ``"Qwen/Qwen3-4B"``). ``cache_dir`` is accepted for API symmetry; set
+    ``HF_HOME`` in the environment for true TransformerLens cache control.
 
     If ``hf_model_id`` is set, load that Hugging Face model/folder first and
     pass it as ``hf_model`` while keeping ``model_id`` for TransformerLens's

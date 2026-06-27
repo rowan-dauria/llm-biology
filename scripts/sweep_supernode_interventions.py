@@ -3,7 +3,7 @@
 The input graph is the Neuronpedia-compatible attribution JSON exported by this
 project. The script looks up a named qParams supernode, parses its constituent
 feature node ids, jointly steers those features with
-``biology_server_t_lens.tl_intervention.run_feature_intervention``, and writes a
+``biology_server.tl_intervention.run_feature_intervention``, and writes a
 JSON summary of the logit and feature-activation effects at each magnitude.
 """
 
@@ -272,11 +272,11 @@ def main() -> None:
         pick_device_dtype,
         prepend_special_prefix,
     )
-    from biology_server_t_lens.tl_intervention import (
+    from biology_server.tl_intervention import (
         FeatureIntervention,
         run_feature_intervention,
     )
-    from biology_server_t_lens.tl_model import load_replacement_model
+    from biology_server.tl_model import load_replacement_model
 
     graph_path = args.graph_json.expanduser().resolve()
     graph = load_graph(graph_path)

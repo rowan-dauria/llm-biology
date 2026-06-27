@@ -1,9 +1,9 @@
 """Run the TransformerLens attribution path locally on CSD3 (no Colab runtime).
 
 This is the non-Colab counterpart of
-``notebooks/dallas_tl_attribution_colab.ipynb``. It previews the next-token
-prediction for the prompt, then runs the TransformerLens-backed attribution path
-through ``BiologyAttributionRunner`` and saves the attribution graph JSON (plus an
+``notebooks/dallas_tl_attribution_colab.ipynb``. It runs the
+TransformerLens-backed attribution path through ``BiologyAttributionRunner``
+and saves the attribution graph JSON (plus an
 optional compact ``.pt`` summary and feature sidecars) under
 ``/home/rd761/rds/hpc-work/<dir-name>``.
 
@@ -88,7 +88,7 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
-    # warn_only until biology_server_t_lens ops are verified deterministic.
+    # warn_only until biology_server TL ops are verified deterministic.
     torch.use_deterministic_algorithms(True, warn_only=True)
     LOGGER.info("Global seed set to %d", seed)
 
@@ -159,7 +159,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--skip-preview-tl-parity-check",
         action="store_true",
-        help="Warn instead of failing when the HF preview and TL forward disagree on top-token probability.",
+        help="Deprecated compatibility flag; the HF preview path has been removed.",
     )
     parser.add_argument(
         "--topk-dir",
@@ -202,7 +202,12 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--preview-top-k", type=int, default=10)
+    parser.add_argument(
+        "--preview-top-k",
+        type=int,
+        default=10,
+        help="Deprecated compatibility option; ignored.",
+    )
     return parser.parse_args()
 
 
@@ -235,9 +240,9 @@ def main() -> None:
     log_environment()
 
     import biology_server.attribution as attribution_module
-    import biology_server_t_lens
+    import biology_server
 
-    LOGGER.info("TL backend package: %s", biology_server_t_lens.__file__)
+    LOGGER.info("TL backend package: %s", biology_server.__file__)
 
     if args.skip_feature_examples:
 
@@ -261,57 +266,29 @@ def main() -> None:
         batch_size=args.batch_size,
         max_feature_nodes=args.max_feature_nodes,
         topk_dir=args.topk_dir,
-        preview_top_k=args.preview_top_k,
     )
 
-    # --- 1. Preview the next-token prediction --------------------------------
+    # --- 1. Run TL attribution and save the graph ----------------------------
     LOGGER.info("-" * 70)
-    LOGGER.info("Stage 1: preview next-token prediction")
-    preview_start = time.time()
-    preview = runner.preview(
-        args.prompt,
-        slug=slug,
-        use_chat_template=use_chat_template,
-    )
-    LOGGER.info("Preview completed in %.1fs", time.time() - preview_start)
-    LOGGER.info("Prompt tokens (%d):", len(preview.prompt_tokens))
-    for idx, token in enumerate(preview.prompt_tokens):
-        LOGGER.debug("  %02d: %r", idx, token)
-    LOGGER.info(
-        "Target token: id=%d text=%r prob=%.6f",
-        preview.target_token_id,
-        preview.target_token_str,
-        preview.target_token_prob,
-    )
-    LOGGER.info("Top preview tokens:")
-    for item in preview.top_tokens:
-        LOGGER.info("  id=%-8d p=%.6f text=%r", item.token_id, item.prob, item.token)
-
-    # --- 2. Run TL attribution and save the graph ----------------------------
-    LOGGER.info("-" * 70)
-    LOGGER.info("Stage 2: TransformerLens attribution + graph export")
+    LOGGER.info("Stage 1: TransformerLens attribution + graph export")
     graph_start = time.time()
     result = runner.generate_graph(
         args.prompt,
         slug=slug,
         target_token_id=args.target_token_id,
         target_token=args.target_token,
-        preview_top_token_id=preview.target_token_id,
-        preview_top_token=preview.target_token_str,
-        preview_top_token_prob=preview.target_token_prob,
         node_threshold=args.node_threshold,
         edge_threshold=args.edge_threshold,
         logit_prob_threshold=args.logit_prob_threshold,
         max_logit_nodes=args.max_logit_nodes,
-        skip_preview_tl_parity_check=args.skip_preview_tl_parity_check,
         use_chat_template=use_chat_template,
         save_pt=args.save_pt,
     )
     LOGGER.info("generate_graph completed in %.1fs", time.time() - graph_start)
 
-    # --- 3. Inspect saved artifacts ------------------------------------------
+    # --- 2. Inspect saved artifacts ------------------------------------------
     LOGGER.info("-" * 70)
-    LOGGER.info("Stage 3: saved artifacts")
+    LOGGER.info("Stage 2: saved artifacts")
     LOGGER.info("graph_json=%s", result.graph_path)
     LOGGER.info("compact_pt=%s", result.pt_path)
     LOGGER.info("target=%r p=%.6f", result.target_token_str, result.target_token_prob)

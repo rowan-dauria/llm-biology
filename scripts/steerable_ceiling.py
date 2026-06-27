@@ -106,12 +106,12 @@ def main() -> None:
         pick_device_dtype,
         prepend_special_prefix,
     )
-    from biology_server_t_lens.tl_intervention import (
+    from biology_server.tl_intervention import (
         FeatureIntervention,
         compute_direct_logit_contributions,
         run_feature_intervention,
     )
-    from biology_server_t_lens.tl_model import load_replacement_model
+    from biology_server.tl_model import load_replacement_model
 
     graph_path = args.graph_json.expanduser().resolve()
     graph = sweep.load_graph(graph_path)

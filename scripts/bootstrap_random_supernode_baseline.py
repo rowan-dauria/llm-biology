@@ -114,7 +114,7 @@ def capture_clean_features(
     """
     import torch
 
-    from biology_server_t_lens.tl_forward import ensure_replacement_mlp_hooks
+    from biology_server.tl_forward import ensure_replacement_mlp_hooks
 
     ensure_replacement_mlp_hooks(model, layers)
     captured: dict[int, Any] = {}
@@ -425,7 +425,7 @@ def run_one_sweep_writes(
     """
     import torch
 
-    from biology_server_t_lens.tl_intervention import run_feature_intervention
+    from biology_server.tl_intervention import run_feature_intervention
 
     rows: list[dict[str, float]] = []
     resolved_token_id: int | None = target_token_id
@@ -478,7 +478,7 @@ def run_one_sweep(
     target_pos: int,
 ) -> tuple[list[dict[str, float]], int, float]:
     """Sweep one feature set over magnitudes; return per-magnitude target stats."""
-    from biology_server_t_lens.tl_intervention import (
+    from biology_server.tl_intervention import (
         FeatureIntervention,
         run_feature_intervention,
     )
@@ -639,7 +639,7 @@ def main() -> None:
         pick_device_dtype,
         prepend_special_prefix,
     )
-    from biology_server_t_lens.tl_model import load_replacement_model
+    from biology_server.tl_model import load_replacement_model
 
     graph_path = args.graph_json.expanduser().resolve()
     graph = load_graph(graph_path)

@@ -9,8 +9,8 @@ import torch.nn as nn
 from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTranscoder
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 
-from biology_server_t_lens.tl_forward import HookState, install_transcoder_hooks
-from biology_server_t_lens.tl_freeze import install_freezes
+from biology_server.tl_forward import HookState, install_transcoder_hooks
+from biology_server.tl_freeze import install_freezes
 
 
 def _toy_model(seed: int = 0) -> HookedTransformer:

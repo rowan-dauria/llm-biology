@@ -1,17 +1,17 @@
 """Forward-pass machinery: transcoder substitution + active-feature cache.
 
-Mirrors the legacy ``attribution.py`` MLP / embedding / final-hidden hooks, but
-uses TransformerLens ``HookPoint``\\ s instead of raw module forward hooks. The
-freezes (:func:`biology_server_t_lens.tl_freeze.install_freezes`) must already
-be installed on the model before these hooks fire.
+Uses TransformerLens ``HookPoint``\\ s to expose the MLP input/output,
+embedding, and final-hidden states needed by the custom attribution code. The
+freezes (:func:`biology_server.tl_freeze.install_freezes`) must already be
+installed on the model before these hooks fire.
 
 Public surface:
 
 - :class:`HookState` — per-forward-pass capture buffer.
 - :func:`install_transcoder_hooks` — registers the MLP/embedding/final hooks
   that populate the state and expose backward injection sites.
-- :func:`layer_feature_data` / :class:`LayerFeatureData` — re-exported from the
-  legacy attribution module so downstream code can reuse the same dataclass.
+- :func:`layer_feature_data` / :class:`LayerFeatureData` — shared dataclass and
+  helper used by the graph-building runner.
 """
 
 from __future__ import annotations
@@ -48,10 +48,9 @@ __all__ = [
 class HookState:
     """Per-forward capture buffer.
 
-    Mirrors the legacy ``biology_server.attribution.HookState`` but keyed off
-    TransformerLens hook points. ``mlp_inputs`` / ``feature_values`` /
-    ``layer_features`` are populated on the forward pass; ``output_grads`` and
-    ``embedding_grad`` are populated by backward hooks during ``.backward()``.
+    ``mlp_inputs`` / ``feature_values`` / ``layer_features`` are populated on
+    the forward pass; ``output_grads`` and ``embedding_grad`` are populated by
+    backward hooks during ``.backward()``.
     """
 
     layers: list[int]
@@ -138,9 +137,9 @@ def ensure_replacement_mlp_hooks(model: HookedTransformer, layers: list[int]) ->
 def finalize_active_features(state: HookState) -> list[ActiveFeature]:
     """Assign per-layer score offsets and flatten the active-feature list.
 
-    Mirrors ``biology_server.attribution.finalize_active_features``. Mutates
-    ``state.layer_features`` in place to set ``start`` on each ``LayerFeatureData``
-    so that ``data.start:data.end`` slices into the dense feature-score vector.
+    Mutates ``state.layer_features`` in place to set ``start`` on each
+    ``LayerFeatureData`` so that ``data.start:data.end`` slices into the dense
+    feature-score vector.
     """
     active: list[ActiveFeature] = []
     offset = 0

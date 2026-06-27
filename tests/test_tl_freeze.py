@@ -7,7 +7,7 @@ import unittest
 import torch
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 
-from biology_server_t_lens.tl_freeze import install_freezes, verify_linearisation
+from biology_server.tl_freeze import install_freezes, verify_linearisation
 
 
 def _toy_model(seed: int = 0) -> HookedTransformer:

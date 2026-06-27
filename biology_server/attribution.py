@@ -1,8 +1,8 @@
-"""Reusable Qwen3-4B attribution runner for scripts and the local server.
+"""Reusable Qwen3-4B TransformerLens attribution runner for scripts.
 
 Only uses circuit-tracer's per-layer ``SingleLayerTranscoder`` class, loaded via
-``load_relu_transcoder``. The attribution, graph construction, feature labels,
-and frontend export are custom project code.
+``load_transcoder``. Attribution, graph construction, feature labels, and
+frontend export are custom project code.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ import os
 import re
 import threading
 import time
-import types
 import warnings
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field, replace
@@ -20,16 +19,12 @@ from pathlib import Path
 from typing import Any
 
 import torch
-import torch.nn.functional as F
 from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTranscoder
 from circuit_tracer.transcoder.single_layer_transcoder import (
-    load_transcoder as load_relu_transcoder,
+    load_transcoder,
 )
 from huggingface_hub import snapshot_download
-from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
-from transformers.masking_utils import ALL_MASK_ATTENTION_FUNCTIONS, eager_mask
-from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
-from transformers.models.qwen3.modeling_qwen3 import Qwen3RMSNorm, repeat_kv
+from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from biology_server.circuit_graph_export import (
     ErrorNode,
@@ -44,7 +39,7 @@ from biology_server.circuit_graph_export import (
     make_feature_example_payload,
     paired_feature_index,
 )
-from biology_server_t_lens.memory_profile import (
+from biology_server.memory_profile import (
     memory_checkpoint,
     memory_profile_call,
     memory_scope,
@@ -66,7 +61,6 @@ DEFAULT_LOGIT_PROB_THRESHOLD = 0.95
 DEFAULT_MAX_LOGIT_NODES = 10
 DEFAULT_BATCH_SIZE = 128
 DEFAULT_UPDATE_INTERVAL = 1
-DEFAULT_PREVIEW_TL_PROB_TOLERANCE = 0.1
 
 CACHE_DIR = os.getenv("HF_HOME")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -74,26 +68,6 @@ DEFAULT_GRAPH_DIR = PROJECT_ROOT / "data" / "ui_graphs"
 DEFAULT_PT_DIR = PROJECT_ROOT / "data" / "attribution_graphs"
 DEFAULT_TOPK_DIR = PROJECT_ROOT / "data" / "feature_topk" / "150k-pile"
 DEFAULT_WINDOW = 10
-
-
-@dataclass(slots=True)
-class HookState:
-    layers: list[int]
-    transcoders: dict[int, SingleLayerTranscoder]
-    mlp_inputs: dict[int, torch.Tensor]
-    feature_values: dict[int, torch.Tensor]
-    layer_features: dict[int, LayerFeatureData]
-    output_grads: dict[int, torch.Tensor]
-    embedding: torch.Tensor | None = None
-    token_vectors: torch.Tensor | None = None
-    embedding_grad: torch.Tensor | None = None
-    final_hidden: torch.Tensor | None = None
-
-    def clear_grads(self) -> None:
-        self.output_grads.clear()
-        self.embedding_grad = None
-        if self.embedding is not None:
-            self.embedding.grad = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,26 +131,6 @@ class LogitTarget:
 
 
 @dataclass(frozen=True, slots=True)
-class LogitAttributionRow:
-    target: LogitTarget
-    feature_scores: torch.Tensor
-    embedding_scores: torch.Tensor
-
-
-@dataclass(frozen=True, slots=True)
-class PreviewResult:
-    prompt: str
-    slug: str
-    use_chat_template: bool
-    prompt_tokens: list[str]
-    input_token_ids: list[int]
-    target_token_id: int
-    target_token_str: str
-    target_token_prob: float
-    top_tokens: list[TokenCandidate]
-
-
-@dataclass(frozen=True, slots=True)
 class GraphResult:
     prompt: str
     slug: str
@@ -226,144 +180,6 @@ def slugify(text: str) -> str:
     return slug or "qwen3-circuit"
 
 
-def make_embedding_hook(state: HookState):
-    def hook(_module, _inputs, output):
-        embedding = output.detach().clone().requires_grad_(True)
-        state.embedding = embedding
-        state.token_vectors = embedding.detach().squeeze(0)
-        embedding.register_hook(lambda grad: setattr(state, "embedding_grad", grad.detach()))
-        return embedding
-
-    return hook
-
-
-def make_final_hidden_hook(state: HookState):
-    def hook(_module, _inputs, output):
-        state.final_hidden = output
-        return output
-
-    return hook
-
-
-_FREEZE_FLAG_ATTR = "_attribution_freezes_installed"
-_DETACHED_EAGER_KEY = "detached_eager"
-
-
-def _detached_eager_attention_forward(
-    module,
-    query,
-    key,
-    value,
-    attention_mask,
-    scaling,
-    dropout=0.0,
-    **kwargs,
-):
-    """Eager attention with attention pattern detached.
-
-    Mirrors transformers.models.qwen3.modeling_qwen3.eager_attention_forward but
-    treats the softmaxed attention pattern as a constant. Gradients still flow
-    through value_states (and thus W_V, W_O), giving the linearised OV-only
-    attention Jacobian used by the attribution-graphs methodology.
-    """
-
-    del dropout  # never apply attention dropout during attribution
-    key_states = repeat_kv(key, module.num_key_value_groups)
-    value_states = repeat_kv(value, module.num_key_value_groups)
-
-    attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
-    if attention_mask is not None:
-        causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
-        attn_weights = attn_weights + causal_mask
-
-    attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
-    attn_weights = attn_weights.detach()
-    attn_output = torch.matmul(attn_weights, value_states)
-    attn_output = attn_output.transpose(1, 2).contiguous()
-    return attn_output, attn_weights
-
-
-def _patched_rms_norm_forward(self, hidden_states):
-    """RMSNorm forward with the 1/RMS scale detached.
-
-    Forward output is numerically identical to the upstream Qwen3RMSNorm, but
-    the rsqrt(variance + eps) factor is treated as an input-independent
-    constant so backward only sees a linear projection through self.weight.
-    """
-
-    input_dtype = hidden_states.dtype
-    hidden_states_f = hidden_states.to(torch.float32)
-    variance = hidden_states_f.pow(2).mean(-1, keepdim=True)
-    scale = torch.rsqrt(variance + self.variance_epsilon).detach()
-    hidden_states_f = hidden_states_f * scale
-    return self.weight * hidden_states_f.to(input_dtype)
-
-
-def install_freezes(model: Any) -> None:
-    """Linearise the model for attribution: freeze attention pattern + RMSNorm scale.
-
-    Replaces each Qwen3 attention layer's eager implementation with one that
-    detaches the softmaxed pattern, and rewrites every Qwen3RMSNorm.forward so
-    that its 1/RMS scale is also detached. Forward numerics are unchanged; only
-    backward gradient flow is altered so that the model is exactly linear in
-    the residual stream (as in the Anthropic local replacement model).
-    """
-
-    if getattr(model, _FREEZE_FLAG_ATTR, False):
-        return
-
-    # .register() writes to the class-level _global_mapping. transformers'
-    # _preprocess_mask_arguments checks _global_mapping directly to decide
-    # whether to skip mask construction, so an instance-level __setitem__
-    # (which only updates _local_mapping) would cause create_causal_mask to
-    # early-exit with None and break the forward pass numerics.
-    ALL_ATTENTION_FUNCTIONS.register(_DETACHED_EAGER_KEY, _detached_eager_attention_forward)
-    ALL_MASK_ATTENTION_FUNCTIONS.register(_DETACHED_EAGER_KEY, eager_mask)
-
-    config = getattr(model, "config", None)
-    if config is not None:
-        config._attn_implementation = _DETACHED_EAGER_KEY
-    for submodule in model.modules():
-        sub_config = getattr(submodule, "config", None)
-        if sub_config is not None and hasattr(sub_config, "_attn_implementation"):
-            sub_config._attn_implementation = _DETACHED_EAGER_KEY
-
-    for submodule in model.modules():
-        if isinstance(submodule, Qwen3RMSNorm):
-            submodule.forward = types.MethodType(_patched_rms_norm_forward, submodule)
-
-    setattr(model, _FREEZE_FLAG_ATTR, True)
-
-
-def make_mlp_hook(layer_idx: int, transcoder: SingleLayerTranscoder, state: HookState):
-    """Replace an MLP and expose source vectors for attribution rows."""
-
-    def hook(_module, inputs, output):
-        mlp_input = inputs[0]
-        state.mlp_inputs[layer_idx] = mlp_input
-        with torch.no_grad():
-            features = transcoder.encode(mlp_input).detach()
-            layer_data = layer_feature_data(transcoder, features.squeeze(0))
-        state.feature_values[layer_idx] = features
-        state.layer_features[layer_idx] = layer_data
-
-        feature_reconstruction = transcoder.decode(
-            features.to(transcoder.W_dec.dtype),
-            mlp_input if transcoder.W_skip is not None else None,
-        ).to(output.dtype)
-        if transcoder.W_skip is not None:
-            skip = transcoder.compute_skip(mlp_input)
-            replacement = skip + (feature_reconstruction - skip).detach()
-        else:
-            replacement = feature_reconstruction.detach().requires_grad_(True)
-        replacement.register_hook(
-            lambda grad, layer=layer_idx: state.output_grads.__setitem__(layer, grad.detach())
-        )
-        return replacement
-
-    return hook
-
-
 def layer_feature_data(
     transcoder: SingleLayerTranscoder,
     features: torch.Tensor,
@@ -394,108 +210,11 @@ def layer_feature_data(
     )
 
 
-def finalize_active_features(state: HookState) -> list[ActiveFeature]:
-    active: list[ActiveFeature] = []
-    offset = 0
-    for layer in state.layers:
-        data = state.layer_features[layer]
-        state.layer_features[layer] = LayerFeatureData(
-            positions=data.positions,
-            feature_ids=data.feature_ids,
-            activations=data.activations,
-            encoder_vectors=data.encoder_vectors,
-            decoder_vectors=data.decoder_vectors,
-            start=offset,
-        )
-        for local_idx in range(data.feature_ids.numel()):
-            active.append(
-                ActiveFeature(
-                    layer=layer,
-                    pos=int(data.positions[local_idx].item()),
-                    feature=int(data.feature_ids[local_idx].item()),
-                    activation=float(data.activations[local_idx].item()),
-                    encoder_vector=data.encoder_vectors[local_idx],
-                    score_index=offset + local_idx,
-                )
-            )
-        offset += int(data.feature_ids.numel())
-    return active
-
-
-def collect_feature_scores(
-    state: HookState,
-    n_features: int,
-    *,
-    layers: list[int] | None = None,
-) -> torch.Tensor:
-    scores: torch.Tensor | None = None
-    score_layers = state.layers if layers is None else layers
-    for layer in score_layers:
-        data = state.layer_features[layer]
-        grad = state.output_grads.get(layer)
-        if grad is None:
-            raise RuntimeError(f"output gradient not captured for layer {layer}")
-        if data.feature_ids.numel() == 0:
-            continue
-        if scores is None:
-            scores = torch.zeros(n_features, dtype=data.decoder_vectors.dtype, device=grad.device)
-        assert scores is not None
-        grad_at_positions = grad[0].index_select(0, data.positions.to(grad.device))
-        layer_scores = (
-            grad_at_positions.to(data.decoder_vectors.dtype) * data.decoder_vectors
-        ).sum(dim=-1)
-        scores[data.start : data.end] = layer_scores
-    if scores is None:
-        device = state.embedding.device if state.embedding is not None else torch.device("cpu")
-        return torch.zeros(n_features, device=device)
-    return scores
-
-
-def collect_embedding_scores(state: HookState) -> torch.Tensor:
-    if state.embedding_grad is None or state.token_vectors is None:
-        raise RuntimeError("Embedding gradients were not captured")
-    return (state.embedding_grad[0].to(state.token_vectors.dtype) * state.token_vectors).sum(dim=-1)
-
-
 def demeaned_unembed_vector(
     unembed: torch.Tensor, token_id: int, dtype: torch.dtype
 ) -> torch.Tensor:
     row = unembed[token_id]
     return (row - unembed.mean(dim=0)).to(dtype)
-
-
-def backward_from_final_hidden(state: HookState, vector: torch.Tensor) -> None:
-    if state.final_hidden is None:
-        raise RuntimeError("Final hidden states were not captured")
-    state.clear_grads()
-    gradient = torch.zeros_like(state.final_hidden)
-    gradient[0, -1] = vector.to(device=gradient.device, dtype=gradient.dtype)
-    state.final_hidden.backward(gradient=gradient, retain_graph=True)
-
-
-def backward_from_feature(state: HookState, feature: SelectedFeature) -> None:
-    """Backprop a downstream feature's encoder vector through the frozen model.
-
-    With install_freezes applied, attention patterns, RMSNorm scales, and the
-    non-linear part of every MLP write are detached. The model is therefore
-    exactly linear in the residual stream, so injecting ``f_enc`` at
-    ``(feature.layer, feature.pos)`` and calling ``mlp_input.backward(...)``
-    produces residual-stream gradients whose dot product with upstream decoder
-    vectors equals the direct effect described in Anthropic's Methods paper
-    (eqns 7 and 8): same-token transcoder→transcoder edges plus cross-token
-    edges mediated by frozen attention OV circuits.
-    """
-
-    if feature.encoder_vector is None:
-        raise RuntimeError("Selected feature is missing its encoder vector")
-    state.clear_grads()
-
-    mlp_input = state.mlp_inputs[feature.layer]
-    gradient = torch.zeros_like(mlp_input)
-    gradient[0, feature.pos] = feature.encoder_vector.to(
-        device=gradient.device, dtype=gradient.dtype
-    )
-    mlp_input.backward(gradient=gradient, retain_graph=True)
 
 
 def load_transcoders(
@@ -514,7 +233,7 @@ def load_transcoders(
         if not path.exists():
             raise FileNotFoundError(f"No transcoder for layer {layer}: {path}")
         with timed(f"Loading transcoder layer {layer}"):
-            transcoder = load_relu_transcoder(
+            transcoder = load_transcoder(
                 str(path),
                 layer,
                 device=device,
@@ -633,28 +352,6 @@ def top_token_candidate(
     if not candidates:
         raise RuntimeError("could not select top token from empty logits")
     return candidates[0]
-
-
-def assert_top_token_parity(
-    *,
-    preview_top: TokenCandidate,
-    tl_top: TokenCandidate,
-    prob_tolerance: float = DEFAULT_PREVIEW_TL_PROB_TOLERANCE,
-) -> None:
-    if prob_tolerance < 0:
-        raise ValueError("prob_tolerance must be non-negative")
-
-    prob_diff = abs(preview_top.prob - tl_top.prob)
-    if preview_top.token_id == tl_top.token_id and prob_diff <= prob_tolerance:
-        return
-
-    raise RuntimeError(
-        "Preview/TL top-token parity failed: "
-        f"preview top id={preview_top.token_id} ({preview_top.token!r}) "
-        f"p={preview_top.prob:.6f}; "
-        f"TL top id={tl_top.token_id} ({tl_top.token!r}) p={tl_top.prob:.6f}; "
-        f"allowed probability difference={prob_tolerance:.3f}"
-    )
 
 
 def select_logit_targets(
@@ -841,59 +538,6 @@ def row_links(
         GraphLink(source=source_id, target=target_id, weight=weight)
         for _, source_id, weight in candidates[:limit]
     ]
-
-
-def build_full_attribution_links(
-    *,
-    selected: list[SelectedFeature],
-    state: HookState,
-    active_count: int,
-    logit_rows: list[LogitAttributionRow],
-    input_token_ids: list[int],
-) -> list[GraphLink]:
-    """Build unpruned attribution rows for every selected feature and logit.
-
-    Logit rows reuse the gradients captured during backward_from_final_hidden.
-    For each selected feature we run a fresh backward_from_feature pass through
-    the frozen model so that the residual-stream gradients pick up both the
-    same-token transcoder→transcoder direct path (eqn 7) and cross-token
-    contributions mediated by the frozen attention OV circuits (eqn 8).
-    """
-
-    links: list[GraphLink] = []
-    for row in logit_rows:
-        links.extend(
-            row_links(
-                target_id=row.target.node_id,
-                feature_scores=row.feature_scores,
-                embedding_scores=row.embedding_scores,
-                selected=selected,
-                input_token_ids=input_token_ids,
-                edge_top_k=0,
-            )
-        )
-
-    for index, downstream in enumerate(selected, start=1):
-        if index == 1 or index % 25 == 0 or index == len(selected):
-            print(f"[INFO] full circuit rows {index}/{len(selected)}")
-
-        backward_from_feature(state, downstream)
-
-        source_layers = [layer for layer in state.layers if layer < downstream.layer]
-        feature_scores = collect_feature_scores(state, active_count, layers=source_layers)
-        embedding_scores = collect_embedding_scores(state)
-
-        links.extend(
-            row_links(
-                target_id=downstream.node_id,
-                feature_scores=feature_scores,
-                embedding_scores=embedding_scores,
-                selected=selected,
-                input_token_ids=input_token_ids,
-                edge_top_k=0,
-            )
-        )
-    return links
 
 
 def normalized_edge_weights(
@@ -1301,7 +945,6 @@ class BiologyAttributionRunner:
         tokenizer_id: str | None = None,
         graph_file_dir: Path | str = DEFAULT_GRAPH_DIR,
         topk_dir: Path | str = DEFAULT_TOPK_DIR,
-        preview_top_k: int = DEFAULT_LOGITS_TOP_K,
         batch_size: int = DEFAULT_BATCH_SIZE,
         max_feature_nodes: int = DEFAULT_MAX_FEATURE_NODES,
         update_interval: int = DEFAULT_UPDATE_INTERVAL,
@@ -1312,7 +955,6 @@ class BiologyAttributionRunner:
         self.tokenizer_id = tokenizer_id
         self.graph_file_dir = Path(graph_file_dir)
         self.topk_dir = Path(topk_dir)
-        self.preview_top_k = preview_top_k
         self.batch_size = batch_size
         self.max_feature_nodes = max_feature_nodes
         self.update_interval = update_interval
@@ -1320,7 +962,6 @@ class BiologyAttributionRunner:
         self._device: torch.device | None = None
         self._dtype: torch.dtype | None = None
         self._tokenizer: PreTrainedTokenizerBase | None = None
-        self._preview_model: Any | None = None
         self._model: Any | None = None
         self._transcoders: dict[int, SingleLayerTranscoder] | None = None
 
@@ -1383,15 +1024,6 @@ class BiologyAttributionRunner:
             self._move_transcoders_to_device("cpu")
         memory_checkpoint("transcoders:offloaded after forward")
 
-    def _release_preview_model(self) -> None:
-        if self._preview_model is None:
-            return
-        memory_checkpoint("preview_model:before release")
-        self._preview_model = None
-        gc.collect()
-        self._empty_device_cache()
-        memory_checkpoint("preview_model:after release")
-
     def _ensure_loaded(self, *, include_transcoders: bool = True) -> None:
         memory_checkpoint(f"ensure_loaded:start include_transcoders={include_transcoders}")
         device, dtype = self._ensure_device_dtype()
@@ -1399,9 +1031,8 @@ class BiologyAttributionRunner:
         memory_checkpoint("ensure_loaded:after device dtype")
 
         if self._model is None:
-            from biology_server_t_lens.tl_model import load_replacement_model
+            from biology_server.tl_model import load_replacement_model
 
-            self._release_preview_model()
             tokenizer = self._ensure_tokenizer()
             with timed("Loading model"):
                 tl_model_id = self.tl_model_id or self.model_id
@@ -1446,34 +1077,6 @@ class BiologyAttributionRunner:
         assert self._transcoders is not None
         return self._model, self._tokenizer, self._transcoders
 
-    def _loaded_for_preview(self) -> tuple[Any, PreTrainedTokenizerBase]:
-        memory_checkpoint("preview_load:start")
-        device, dtype = self._ensure_device_dtype()
-        print(f"[INFO] device={device} dtype={dtype} layers={self.layers}")
-        tokenizer = self._ensure_tokenizer()
-        if self._preview_model is None:
-            with timed("Loading preview model"):
-                model = memory_profile_call(
-                    "preview_model:AutoModelForCausalLM.from_pretrained",
-                    AutoModelForCausalLM.from_pretrained,
-                    self.model_id,
-                    cache_dir=CACHE_DIR,
-                    torch_dtype=dtype,
-                    trust_remote_code=True,
-                    low_cpu_mem_usage=True,
-                )
-                memory_checkpoint("preview_model:after from_pretrained")
-                with memory_scope("preview_model:to device"):
-                    model.to(device).eval()
-                for param in model.parameters():
-                    param.requires_grad_(False)
-                self._preview_model = model
-                self._empty_device_cache()
-                memory_checkpoint("preview_model:ready")
-        memory_checkpoint("preview_load:end")
-        assert self._preview_model is not None
-        return self._preview_model, tokenizer
-
     def _inputs_for_prompt(
         self,
         tokenizer: PreTrainedTokenizerBase,
@@ -1503,78 +1106,6 @@ class BiologyAttributionRunner:
         print(f"[INFO] prompt tokens ({len(prompt_tokens)}): {prompt_tokens}")
         return input_ids, input_token_ids, prompt_tokens
 
-    def _register_hooks(
-        self,
-        model: Any,
-        transcoders: dict[int, SingleLayerTranscoder],
-        state: HookState,
-    ) -> list[Any]:
-        handles = [model.model.embed_tokens.register_forward_hook(make_embedding_hook(state))]
-        for layer in self.layers:
-            handles.append(
-                model.model.layers[layer].mlp.register_forward_hook(
-                    make_mlp_hook(layer, transcoders[layer], state)
-                )
-            )
-        handles.append(model.model.norm.register_forward_hook(make_final_hidden_hook(state)))
-        return handles
-
-    def preview(
-        self,
-        prompt: str,
-        *,
-        slug: str | None = None,
-        top_k: int | None = None,
-        use_chat_template: bool = True,
-    ) -> PreviewResult:
-        """Run a lightweight inference forward and return the default next-token target."""
-
-        # use thread lockig to prevent multiple simultaneous preview requests from attempting
-        # to load multiple models and running out of memory
-        with self._lock:
-            memory_checkpoint("preview:start")
-            model, tokenizer = self._loaded_for_preview()
-            resolved_slug = slug or slugify(prompt[:50])
-            with memory_scope("preview:tokenize"):
-                input_ids, input_token_ids, prompt_tokens = self._inputs_for_prompt(
-                    tokenizer, prompt, use_chat_template=use_chat_template
-                )
-            with timed("Preview inference forward pass"), torch.no_grad():
-                outputs = memory_profile_call(
-                    "preview:hf_model_forward",
-                    lambda: model(input_ids, use_cache=False),
-                )
-                logits = outputs.logits
-                memory_checkpoint("preview:after model_forward")
-                last_logits = logits[0, -1]
-                target_token_id, target_token_str, target_token_prob = select_target_token(
-                    tokenizer,
-                    last_logits,
-                )
-                top_tokens = top_token_candidates(
-                    tokenizer,
-                    last_logits,
-                    top_k=top_k if top_k is not None else self.preview_top_k,
-                )
-                print(
-                    f"[INFO] preview target token id={target_token_id} "
-                    f"({target_token_str!r}) p={target_token_prob:.4f}"
-                )
-                memory_checkpoint("preview:after top tokens")
-
-            memory_checkpoint("preview:end")
-            return PreviewResult(
-                prompt=prompt,
-                slug=resolved_slug,
-                use_chat_template=use_chat_template,
-                prompt_tokens=prompt_tokens,
-                input_token_ids=input_token_ids,
-                target_token_id=target_token_id,
-                target_token_str=target_token_str,
-                target_token_prob=target_token_prob,
-                top_tokens=top_tokens,
-            )
-
     def generate_graph(
         self,
         prompt: str,
@@ -1589,16 +1120,11 @@ class BiologyAttributionRunner:
         graph_file_dir: Path | str | None = None,
         save_pt: str | None = None,
         use_chat_template: bool = True,
-        preview_top_token_id: int | None = None,
-        preview_top_token: str | None = None,
-        preview_top_token_prob: float | None = None,
-        preview_tl_prob_tolerance: float = DEFAULT_PREVIEW_TL_PROB_TOLERANCE,
-        skip_preview_tl_parity_check: bool = False,
     ) -> GraphResult:
         """Generate and export a circuit-tracer-compatible graph JSON."""
 
-        # use thread locking to prevent multiple simultaneous preview requests from attempting
-        # to load multiple models and running out of memory
+        # Serialize heavy model/transcoder use so concurrent CLI/server callers
+        # cannot accidentally create multiple Qwen copies on one GPU.
         with self._lock:
             self._ensure_loaded(include_transcoders=False)
             assert self._model is not None
@@ -1610,7 +1136,7 @@ class BiologyAttributionRunner:
                 tokenizer, prompt, use_chat_template=use_chat_template
             )
 
-            from biology_server_t_lens.tl_attribution import (
+            from biology_server.tl_attribution import (
                 TargetSpec,
                 detached_logits,
                 run_attribution_from_context,
@@ -1618,44 +1144,9 @@ class BiologyAttributionRunner:
             )
 
             batch_size = max(self.batch_size, max_logit_nodes)
-            with timed("TL base forward parity check"):
+            with timed("TL base forward"):
                 base_logits = detached_logits(model, input_ids)  # forward pass for output logits
                 last_logits = base_logits[0, -1]
-                tl_top = top_token_candidate(tokenizer, last_logits)
-                if preview_top_token_id is not None or preview_top_token_prob is not None:
-                    if preview_top_token_id is None or preview_top_token_prob is None:
-                        raise ValueError(
-                            "preview_top_token_id and preview_top_token_prob must be provided "
-                            "together"
-                        )
-                    preview_top = TokenCandidate(
-                        token_id=int(preview_top_token_id),
-                        # TODO: remove these fallbacks?
-                        token=(
-                            preview_top_token
-                            if preview_top_token is not None
-                            else tokenizer.decode([int(preview_top_token_id)])
-                        ),
-                        prob=float(preview_top_token_prob),
-                    )
-                    if skip_preview_tl_parity_check:
-                        print(
-                            "[WARN] skipping preview/TL top-token parity check: "
-                            f"preview id={preview_top.token_id} ({preview_top.token!r}) "
-                            f"p={preview_top.prob:.4f}; "
-                            f"TL id={tl_top.token_id} ({tl_top.token!r}) p={tl_top.prob:.4f}"
-                        )
-                    else:
-                        assert_top_token_parity(
-                            preview_top=preview_top,
-                            tl_top=tl_top,
-                            prob_tolerance=preview_tl_prob_tolerance,
-                        )
-                        print(
-                            "[INFO] preview/TL top-token parity ok: "
-                            f"id={tl_top.token_id} ({tl_top.token!r}) "
-                            f"preview_p={preview_top.prob:.4f} tl_p={tl_top.prob:.4f}"
-                        )
                 logit_targets = select_logit_targets(
                     tokenizer,
                     last_logits,

@@ -286,8 +286,8 @@ def measure_model(
     from transformers import AutoTokenizer
 
     from biology_server.attribution import CACHE_DIR, load_transcoders, pick_device_dtype
-    from biology_server_t_lens.tl_intervention import run_feature_intervention
-    from biology_server_t_lens.tl_model import load_replacement_model
+    from biology_server.tl_intervention import run_feature_intervention
+    from biology_server.tl_model import load_replacement_model
 
     start = time.time()
     device, dtype = pick_device_dtype()

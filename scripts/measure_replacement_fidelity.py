@@ -41,8 +41,8 @@ from biology_server.attribution import (  # noqa: E402
     parse_layers,
     pick_device_dtype,
 )
-from biology_server_t_lens.tl_forward import ensure_replacement_mlp_hooks  # noqa: E402
-from biology_server_t_lens.tl_model import load_replacement_model  # noqa: E402
+from biology_server.tl_forward import ensure_replacement_mlp_hooks  # noqa: E402
+from biology_server.tl_model import load_replacement_model  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Fidelity hooks — genuine MLP substitution (not the attribution ghost-skip).

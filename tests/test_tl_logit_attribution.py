@@ -18,17 +18,17 @@ import torch.nn as nn
 from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTranscoder
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 
-from biology_server_t_lens.tl_attribution import (
+from biology_server.tl_attribution import (
     attribute_logit_row,
     collect_feature_scores,
     demeaned_unembed_vector,
 )
-from biology_server_t_lens.tl_forward import (
+from biology_server.tl_forward import (
     HookState,
     finalize_active_features,
     install_transcoder_hooks,
 )
-from biology_server_t_lens.tl_freeze import install_freezes
+from biology_server.tl_freeze import install_freezes
 
 
 def _toy_model(seed: int = 0) -> HookedTransformer:
