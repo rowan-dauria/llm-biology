@@ -1,4 +1,4 @@
-"""HTTP server for prompt-preview and background attribution graph generation."""
+"""Lightweight local server for Neuronpedia-compatible attribution graphs."""
 
 from __future__ import annotations
 
@@ -11,74 +11,23 @@ import http.server
 import json
 import logging
 import mimetypes
+import re
 import socketserver
 import threading
 import time
-import traceback
-import uuid
-from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, field
-from io import StringIO
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from biology_server.attribution import (
-    DEFAULT_EDGE_THRESHOLD,
-    DEFAULT_GRAPH_DIR,
-    DEFAULT_LAYERS,
-    DEFAULT_LOGIT_PROB_THRESHOLD,
-    DEFAULT_MAX_LOGIT_NODES,
-    DEFAULT_NODE_THRESHOLD,
-    MODEL_ID,
-    PROJECT_ROOT,
-    BiologyAttributionRunner,
-    GraphResult,
-    PreviewResult,
-    parse_layers,
-    slugify,
-)
 from biology_server.circuit_graph_export import write_graph_metadata
 
 logger = logging.getLogger(__name__)
 logger.propagate = False
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_GRAPH_DIR = PROJECT_ROOT / "data" / "ui_graphs"
 DEFAULT_STATIC_DIR = Path(__file__).parent / "static"
 GZIP_MIN_BYTES = 1 << 20
-DEFAULT_MAX_JOBS = 200
-
-
-@dataclass(slots=True)
-class PreviewRecord:
-    preview_id: str
-    result: PreviewResult
-    created_at: float = field(default_factory=time.time)
-
-
-@dataclass(slots=True)
-class GraphJob:
-    job_id: str
-    preview_id: str
-    prompt: str
-    slug: str
-    target_token_id: int
-    target_token: str
-    target_token_prob: float
-    node_threshold: float
-    edge_threshold: float
-    logit_prob_threshold: float
-    max_logit_nodes: int
-    use_chat_template: bool
-    status: str = "queued"
-    created_at: float = field(default_factory=time.time)
-    started_at: float | None = None
-    finished_at: float | None = None
-    logs: list[str] = field(default_factory=list)
-    error: str | None = None
-    graph_path: str | None = None
-    graph_url: str | None = None
-    feature_nodes: int | None = None
-    links: int | None = None
 
 
 class BiologyApp:
@@ -88,92 +37,14 @@ class BiologyApp:
         graph_file_dir: Path | str = DEFAULT_GRAPH_DIR,
         frontend_dir: Path | str | None = None,
         static_dir: Path | str = DEFAULT_STATIC_DIR,
-        runner: BiologyAttributionRunner | None = None,
-        max_previews: int = 100,
-        max_jobs: int = DEFAULT_MAX_JOBS,
     ) -> None:
         self.graph_file_dir = Path(graph_file_dir).resolve()
         self.frontend_dir = Path(frontend_dir).resolve() if frontend_dir else resolve_frontend_dir()
         self.static_dir = Path(static_dir).resolve()
         self.graph_file_dir.mkdir(parents=True, exist_ok=True)
-        self.runner = runner or BiologyAttributionRunner(graph_file_dir=self.graph_file_dir)
-        self.max_previews = max_previews
-        self.max_jobs = max_jobs
-        self.previews: dict[str, PreviewRecord] = {}
-        self.jobs: dict[str, GraphJob] = {}
-        self._lock = threading.RLock()
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="biology-graph")
-        self._futures: dict[str, Future[None]] = {}
 
     def shutdown(self) -> None:
-        self._executor.shutdown(wait=False, cancel_futures=False)
-
-    def preview(self, payload: dict[str, Any]) -> dict[str, Any]:
-        prompt = require_nonempty_string(payload, "prompt")
-        slug = optional_string(payload, "slug")
-        use_chat_template = optional_bool(payload, "use_chat_template", default=True)
-        result = self.runner.preview(prompt, slug=slug, use_chat_template=use_chat_template)
-        preview_id = uuid.uuid4().hex
-        with self._lock:
-            self.previews[preview_id] = PreviewRecord(preview_id=preview_id, result=result)
-            self._trim_previews()
-        return preview_to_json(preview_id, result)
-
-    def enqueue_graph(self, payload: dict[str, Any]) -> dict[str, Any]:
-        preview_id = require_nonempty_string(payload, "preview_id")
-        slug_override = optional_string(payload, "slug")
-        node_threshold = optional_float(
-            payload,
-            "node_threshold",
-            default=DEFAULT_NODE_THRESHOLD,
-            minimum=0.0,
-            maximum=1.0,
-        )
-        edge_threshold = optional_float(
-            payload,
-            "edge_threshold",
-            default=DEFAULT_EDGE_THRESHOLD,
-            minimum=0.0,
-            maximum=1.0,
-        )
-        logit_prob_threshold = optional_float(
-            payload,
-            "logit_prob_threshold",
-            default=DEFAULT_LOGIT_PROB_THRESHOLD,
-            minimum=0.0,
-            maximum=1.0,
-        )
-        max_logit_nodes = optional_int(
-            payload,
-            "max_logit_nodes",
-            default=DEFAULT_MAX_LOGIT_NODES,
-            minimum=1,
-        )
-        with self._lock:
-            preview = self.previews.get(preview_id)
-            if preview is None:
-                raise RequestError(404, f"unknown preview_id: {preview_id}")
-            preview_result = preview.result
-            slug = slug_override or preview_result.slug
-            job_id = uuid.uuid4().hex
-            job = GraphJob(
-                job_id=job_id,
-                preview_id=preview_id,
-                prompt=preview_result.prompt,
-                slug=slug,
-                target_token_id=preview_result.target_token_id,
-                target_token=preview_result.target_token_str,
-                target_token_prob=preview_result.target_token_prob,
-                node_threshold=node_threshold,
-                edge_threshold=edge_threshold,
-                logit_prob_threshold=logit_prob_threshold,
-                max_logit_nodes=max_logit_nodes,
-                use_chat_template=preview_result.use_chat_template,
-            )
-            self.jobs[job_id] = job
-            self._futures[job_id] = self._executor.submit(self._run_graph_job, job_id)
-            self._trim_jobs()
-        return job_to_json(job)
+        return
 
     def upload_graph(self, payload: dict[str, Any]) -> dict[str, Any]:
         raw_graph = payload.get("graph")
@@ -195,74 +66,6 @@ class BiologyApp:
             "graph_url": f"/graph_data/{slug}.json",
             "metadata": metadata,
         }
-
-    def get_job(self, job_id: str) -> dict[str, Any]:
-        with self._lock:
-            job = self.jobs.get(job_id)
-            if job is None:
-                raise RequestError(404, f"unknown job_id: {job_id}")
-            return job_to_json(job)
-
-    def _run_graph_job(self, job_id: str) -> None:
-        with self._lock:
-            job = self.jobs[job_id]
-            job.status = "running"
-            job.started_at = time.time()
-
-        capture = StringIO()
-        try:
-            # sending logs staight to stdout for live updates
-            # with contextlib.redirect_stdout(capture), contextlib.redirect_stderr(capture):
-            result = self.runner.generate_graph(
-                job.prompt,
-                slug=job.slug,
-                target_token_id=job.target_token_id,
-                preview_top_token_id=job.target_token_id,
-                preview_top_token=job.target_token,
-                preview_top_token_prob=job.target_token_prob,
-                node_threshold=job.node_threshold,
-                edge_threshold=job.edge_threshold,
-                logit_prob_threshold=job.logit_prob_threshold,
-                max_logit_nodes=job.max_logit_nodes,
-                graph_file_dir=self.graph_file_dir,
-                use_chat_template=job.use_chat_template,
-            )
-            self._finish_job(job_id, result, capture.getvalue())
-        except Exception as exc:
-            details = capture.getvalue() + traceback.format_exc()
-            with self._lock:
-                job = self.jobs[job_id]
-                job.status = "failed"
-                job.finished_at = time.time()
-                job.error = str(exc)
-                job.logs = split_logs(details)
-
-    def _finish_job(self, job_id: str, result: GraphResult, logs: str) -> None:
-        with self._lock:
-            job = self.jobs[job_id]
-            job.status = "succeeded"
-            job.finished_at = time.time()
-            job.graph_path = str(result.graph_path)
-            job.graph_url = f"/graph_data/{result.slug}.json"
-            job.feature_nodes = len(result.selected_features)
-            job.links = len(result.links)
-            job.logs = split_logs(logs)
-
-    def _trim_previews(self) -> None:
-        if len(self.previews) <= self.max_previews:
-            return
-        oldest = sorted(self.previews.values(), key=lambda item: item.created_at)
-        for record in oldest[: len(self.previews) - self.max_previews]:
-            self.previews.pop(record.preview_id, None)
-
-    def _trim_jobs(self) -> None:
-        if len(self.jobs) <= self.max_jobs:
-            return
-        finished = [job for job in self.jobs.values() if job.status in {"succeeded", "failed"}]
-        finished.sort(key=lambda item: item.finished_at or item.created_at)
-        for job in finished[: len(self.jobs) - self.max_jobs]:
-            self.jobs.pop(job.job_id, None)
-            self._futures.pop(job.job_id, None)
 
 
 class RequestError(Exception):
@@ -311,18 +114,8 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
-        if self.command == "POST" and path == "/api/preview":
-            self._send_json(self.server.app.preview(self._read_json_body()))
-            return
-        if self.command == "POST" and path == "/api/graphs":
-            self._send_json(self.server.app.enqueue_graph(self._read_json_body()), status=202)
-            return
         if self.command == "POST" and path == "/api/upload_graph":
             self._send_json(self.server.app.upload_graph(self._read_json_body()), status=201)
-            return
-        if self.command == "GET" and path.startswith("/api/jobs/"):
-            job_id = path.removeprefix("/api/jobs/").strip("/")
-            self._send_json(self.server.app.get_job(job_id), send_body=send_body)
             return
         if self.command == "POST" and path.startswith("/save_graph/"):
             self._handle_save_graph(path, send_body=send_body)
@@ -336,10 +129,6 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
             if rel == "graph-metadata.json":
                 self._serve_metadata(send_body=send_body)
             else:
-                # Graph JSON is mutated in place by Save and the frontend fetches
-                # it with cache:'force-cache'; no-store stops a reload from serving
-                # a stale graph and dropping saved qParams. Feature files under
-                # features/ are immutable, so leave them cacheable.
                 self._serve_file(
                     self.server.app.graph_file_dir,
                     rel,
@@ -362,8 +151,6 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
             )
             return
         if self.command in {"GET", "HEAD"} and path in {"/", "/index.html"}:
-            # App shell changes during development; keep it uncached so an edit
-            # is picked up on reload instead of serving a stale page/script.
             self._serve_file(
                 self.server.app.static_dir, "index.html", send_body=send_body, no_store=True
             )
@@ -403,9 +190,7 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
         with graph_path.open(encoding="utf-8") as handle:
             graph = json.load(handle)
         graph["qParams"] = qparams
-        with graph_path.open("w", encoding="utf-8") as handle:
-            json.dump(graph, handle, indent=2, ensure_ascii=False)
-            handle.write("\n")
+        write_json(graph_path, graph)
         self._send_json({"ok": True}, send_body=send_body)
 
     def _serve_metadata(self, *, send_body: bool) -> None:
@@ -487,7 +272,6 @@ def serve(
     graph_file_dir: Path | str = DEFAULT_GRAPH_DIR,
     frontend_dir: Path | str | None = None,
     static_dir: Path | str = DEFAULT_STATIC_DIR,
-    runner: BiologyAttributionRunner | None = None,
     port: int = 8041,
     host: str = "",
 ) -> Server:
@@ -495,12 +279,11 @@ def serve(
         graph_file_dir=graph_file_dir,
         frontend_dir=frontend_dir,
         static_dir=static_dir,
-        runner=runner,
     )
     httpd = BiologyTCPServer((host, port), BiologyRequestHandler, app)
     server_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     server_thread.start()
-    logger.info("Serving biology backend at http://localhost:%s", port)
+    logger.info("Serving biology graph viewer at http://localhost:%s", port)
     logger.info("Serving graph data from %s", app.graph_file_dir)
     logger.info("Serving circuit-tracer assets from %s", app.frontend_dir)
     return Server(httpd, server_thread)
@@ -522,6 +305,11 @@ def safe_join(root: Path, rel_path: str) -> Path:
     if not path.is_relative_to(root):
         raise RequestError(403, "path escapes served directory")
     return path
+
+
+def slugify(text: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", text.strip().lower()).strip("-")
+    return slug or "uploaded-graph"
 
 
 def upload_slug(
@@ -582,13 +370,6 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
         handle.write("\n")
 
 
-def require_nonempty_string(payload: dict[str, Any], key: str) -> str:
-    value = payload.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise RequestError(400, f"{key} must be a non-empty string")
-    return value
-
-
 def optional_string(payload: dict[str, Any], key: str) -> str | None:
     value = payload.get(key)
     if value is None:
@@ -599,117 +380,23 @@ def optional_string(payload: dict[str, Any], key: str) -> str | None:
     return value or None
 
 
-def optional_int(payload: dict[str, Any], key: str, *, default: int, minimum: int) -> int:
-    value = payload.get(key, default)
-    if isinstance(value, bool):
-        raise RequestError(400, f"{key} must be an integer")
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError) as exc:
-        raise RequestError(400, f"{key} must be an integer") from exc
-    if parsed < minimum:
-        raise RequestError(400, f"{key} must be >= {minimum}")
-    return parsed
-
-
-def optional_float(
-    payload: dict[str, Any],
-    key: str,
-    *,
-    default: float,
-    minimum: float,
-    maximum: float,
-) -> float:
-    value = payload.get(key, default)
-    if isinstance(value, bool):
-        raise RequestError(400, f"{key} must be a number")
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError) as exc:
-        raise RequestError(400, f"{key} must be a number") from exc
-    if parsed < minimum or parsed > maximum:
-        raise RequestError(400, f"{key} must be between {minimum} and {maximum}")
-    return parsed
-
-
-def optional_bool(payload: dict[str, Any], key: str, *, default: bool) -> bool:
-    value = payload.get(key, default)
-    if not isinstance(value, bool):
-        raise RequestError(400, f"{key} must be a boolean")
-    return value
-
-
-def preview_to_json(preview_id: str, result: PreviewResult) -> dict[str, Any]:
-    return {
-        "preview_id": preview_id,
-        "slug": result.slug,
-        "prompt": result.prompt,
-        "use_chat_template": result.use_chat_template,
-        "prompt_tokens": result.prompt_tokens,
-        "input_token_ids": result.input_token_ids,
-        "target_token": {
-            "id": result.target_token_id,
-            "text": result.target_token_str,
-            "prob": result.target_token_prob,
-        },
-        "top_tokens": [
-            {"id": item.token_id, "text": item.token, "prob": item.prob}
-            for item in result.top_tokens
-        ],
-    }
-
-
-def job_to_json(job: GraphJob) -> dict[str, Any]:
-    return {
-        "job_id": job.job_id,
-        "preview_id": job.preview_id,
-        "status": job.status,
-        "slug": job.slug,
-        "created_at": job.created_at,
-        "started_at": job.started_at,
-        "finished_at": job.finished_at,
-        "error": job.error,
-        "logs": job.logs,
-        "graph_path": job.graph_path,
-        "graph_url": job.graph_url,
-        "feature_nodes": job.feature_nodes,
-        "links": job.links,
-        "node_threshold": job.node_threshold,
-        "edge_threshold": job.edge_threshold,
-        "logit_prob_threshold": job.logit_prob_threshold,
-        "max_logit_nodes": job.max_logit_nodes,
-    }
-
-
-def split_logs(logs: str) -> list[str]:
-    return logs.splitlines()[-400:]
-
-
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Serve the llm-biology prompt backend.")
+    parser = argparse.ArgumentParser(description="Serve the llm-biology graph viewer.")
     parser.add_argument("--port", type=int, default=8041)
     parser.add_argument("--host", default="")
     parser.add_argument("--graph-file-dir", type=Path, default=DEFAULT_GRAPH_DIR)
     parser.add_argument("--frontend-dir", type=Path, default=None)
     parser.add_argument("--static-dir", type=Path, default=DEFAULT_STATIC_DIR)
-    parser.add_argument("--layers", default=",".join(str(layer) for layer in DEFAULT_LAYERS))
-    parser.add_argument("--model-id", default=MODEL_ID)
     return parser
 
 
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     args = build_arg_parser().parse_args(argv)
-    runner = BiologyAttributionRunner(
-        layers=parse_layers(args.layers),
-        model_id=args.model_id,
-        graph_file_dir=args.graph_file_dir,
-    )
     server = serve(
         graph_file_dir=args.graph_file_dir,
         frontend_dir=args.frontend_dir,
         static_dir=args.static_dir,
-        runner=runner,
         port=args.port,
         host=args.host,
     )

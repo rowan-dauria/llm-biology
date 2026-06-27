@@ -1,4 +1,4 @@
-"""Run the prompt-driven biology attribution backend."""
+"""Run the viz-only biology graph viewer."""
 
 from __future__ import annotations
 

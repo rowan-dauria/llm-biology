@@ -1,47 +1,27 @@
 html,
 body {
   margin: 0;
-  background: #f6f7f8;
+  background: #fff;
   color: #171717;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
-.server-shell {
+.viewer-shell {
   min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
 }
 
-.prompt-panel {
-  display: grid;
-  grid-template-columns: minmax(520px, 1fr) minmax(300px, 420px);
-  gap: 16px;
-  padding: 14px 16px;
+.viewer-toolbar {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  padding: 10px 14px;
   border-bottom: 1px solid #d8dee4;
   background: #fff;
 }
 
-.prompt-controls {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.prompt-panel textarea {
-  min-height: 86px;
-  resize: vertical;
-  border: 1px solid #bcc5cf;
-  border-radius: 6px;
-  padding: 10px;
-  font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-
-.settings-row {
-  display: flex;
-  align-items: end;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.prompt-panel label {
+.viewer-toolbar label {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -49,13 +29,9 @@ body {
   color: #59636e;
 }
 
-.prompt-panel .checkbox-label {
-  flex-direction: row;
-  align-items: center;
-  height: 32px;
-}
-
-.prompt-panel input {
+.viewer-toolbar select,
+.viewer-toolbar input,
+.viewer-toolbar button {
   height: 32px;
   box-sizing: border-box;
   border: 1px solid #bcc5cf;
@@ -64,19 +40,25 @@ body {
   font: 13px system-ui, sans-serif;
 }
 
-.prompt-panel input[type="checkbox"] {
-  height: auto;
+.viewer-toolbar button {
+  border-color: #1f2328;
+  background: #1f2328;
+  color: #fff;
+  padding: 0 13px;
+  cursor: pointer;
+}
+
+.viewer-toolbar button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+#graph-select {
+  width: min(48vw, 520px);
 }
 
 #slug {
   width: 220px;
-}
-
-#node-threshold,
-#edge-threshold,
-#logit-prob-threshold,
-#max-logit-nodes {
-  width: 96px;
 }
 
 #upload-file {
@@ -84,75 +66,21 @@ body {
   padding: 3px 8px;
 }
 
-.settings-row button {
-  height: 32px;
-  border: 1px solid #1f2328;
-  border-radius: 6px;
-  background: #1f2328;
-  color: #fff;
-  padding: 0 13px;
-  font: 13px system-ui, sans-serif;
-  cursor: pointer;
-}
-
-.settings-row button:disabled {
-  cursor: default;
-  opacity: 0.45;
-}
-
-.status-panel {
-  min-width: 0;
-  border-left: 1px solid #e4e7eb;
-  padding-left: 14px;
-  font-size: 13px;
-}
-
-.status-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
 .status-line {
+  min-width: 180px;
+  align-self: center;
+  margin-left: auto;
+  font-size: 13px;
   font-weight: 600;
-  min-width: 0;
-}
-
-.target-token {
-  margin-bottom: 8px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-
-.top-tokens {
-  display: flex;
-  gap: 5px;
-  flex-wrap: wrap;
-}
-
-.token-chip {
-  border: 1px solid #d0d7de;
-  border-radius: 6px;
-  background: #f6f8fa;
-  padding: 2px 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  white-space: pre;
-}
-
-#job-log {
-  max-height: 86px;
-  overflow: auto;
-  margin: 8px 0 0;
   color: #59636e;
-  background: transparent;
-  font-size: 11px;
-  white-space: pre-wrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nav {
   margin: 0;
-  padding: 8px 16px;
+  padding: 8px 14px;
   border-bottom: 1px solid #e4e7eb;
   background: #fff;
 }
@@ -176,6 +104,7 @@ body {
 #graph.cg {
   display: block;
   width: 100%;
-  height: calc(100vh - 230px);
+  height: 100%;
+  min-height: 0;
   background: #fff;
 }

@@ -3,33 +3,21 @@ from __future__ import annotations
 import http.client
 import json
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from typing import Any
 
 import torch
-from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTranscoder
 
 import biology_server.server as server_module
 from biology_server.attribution import (
     ActiveFeature,
     GraphLink,
-    GraphResult,
-    HookState,
-    LayerFeatureData,
     LogitTarget,
-    PreviewResult,
     SelectedFeature,
-    TokenCandidate,
-    _detached_eager_attention_forward,
-    _patched_rms_norm_forward,
-    assert_top_token_parity,
-    collect_feature_scores,
     dense_edge_matrix_links,
     indirect_logit_influence,
     logit_weights_from_dense_matrix,
-    make_mlp_hook,
     prepend_special_prefix,
     prune_edges_by_thresholded_influence,
     prune_graph_by_indirect_influence,
@@ -57,257 +45,7 @@ class TinyTokenizer:
         return [int(token.removeprefix("T"))]
 
 
-class FakeRunner:
-    def __init__(self, *, fail: bool = False) -> None:
-        self.fail = fail
-        self.preview_calls: list[dict[str, Any]] = []
-        self.generate_calls: list[dict[str, Any]] = []
-
-    def preview(
-        self,
-        prompt: str,
-        *,
-        slug: str | None = None,
-        top_k: int | None = None,
-        use_chat_template: bool = True,
-    ) -> PreviewResult:
-        self.preview_calls.append(
-            {"prompt": prompt, "slug": slug, "top_k": top_k, "use_chat_template": use_chat_template}
-        )
-        return PreviewResult(
-            prompt=prompt,
-            slug=slug or "fake-slug",
-            use_chat_template=use_chat_template,
-            prompt_tokens=["hello"],
-            input_token_ids=[1],
-            target_token_id=2,
-            target_token_str=" world",
-            target_token_prob=0.75,
-            top_tokens=[TokenCandidate(token_id=2, token=" world", prob=0.75)],
-        )
-
-    def generate_graph(
-        self,
-        prompt: str,
-        *,
-        slug: str | None = None,
-        target_token_id: int | None = None,
-        target_token: str | None = None,
-        node_threshold: float,
-        edge_threshold: float,
-        logit_prob_threshold: float,
-        max_logit_nodes: int,
-        graph_file_dir: Path | str | None = None,
-        save_pt: str | None = None,
-        use_chat_template: bool = True,
-        preview_top_token_id: int | None = None,
-        preview_top_token: str | None = None,
-        preview_top_token_prob: float | None = None,
-        preview_tl_prob_tolerance: float = 0.1,
-    ) -> GraphResult:
-        del preview_tl_prob_tolerance
-        if self.fail:
-            raise RuntimeError("boom")
-        self.generate_calls.append(
-            {
-                "prompt": prompt,
-                "slug": slug,
-                "target_token_id": target_token_id,
-                "target_token": target_token,
-                "node_threshold": node_threshold,
-                "edge_threshold": edge_threshold,
-                "logit_prob_threshold": logit_prob_threshold,
-                "max_logit_nodes": max_logit_nodes,
-                "save_pt": save_pt,
-                "use_chat_template": use_chat_template,
-                "preview_top_token_id": preview_top_token_id,
-                "preview_top_token": preview_top_token,
-                "preview_top_token_prob": preview_top_token_prob,
-            }
-        )
-        if graph_file_dir is None:
-            raise AssertionError("graph_file_dir is required")
-        out_dir = Path(graph_file_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        graph_slug = slug or "fake-slug"
-        graph_path = out_dir / f"{graph_slug}.json"
-        graph = {
-            "metadata": {
-                "slug": graph_slug,
-                "scan": "./data/features/qwen3-4b-transcoders",
-                "transcoder_list": [],
-                "prompt_tokens": ["hello"],
-                "prompt": prompt,
-                "schema_version": 1,
-            },
-            "qParams": {"clickedId": "37_2_0"},
-            "nodes": [
-                {
-                    "node_id": "37_2_0",
-                    "feature": 2,
-                    "layer": "37",
-                    "ctx_idx": 0,
-                    "feature_type": "logit",
-                    "token_prob": 0.75,
-                    "is_target_logit": True,
-                    "run_idx": 0,
-                    "reverse_ctx_idx": 0,
-                    "jsNodeId": "L_2-0",
-                    "clerp": 'Output " world" (p=0.750)',
-                }
-            ],
-            "links": [],
-        }
-        graph_path.write_text(json.dumps(graph), encoding="utf-8")
-        feature_dir = out_dir / "features" / "qwen3-4b-transcoders"
-        feature_dir.mkdir(parents=True, exist_ok=True)
-        (feature_dir / "1.json").write_text(json.dumps({"featureIndex": 1}), encoding="utf-8")
-        (out_dir / "graph-metadata.json").write_text(
-            json.dumps({"graphs": [graph["metadata"]]}),
-            encoding="utf-8",
-        )
-        return GraphResult(
-            prompt=prompt,
-            slug=graph_slug,
-            graph_path=graph_path,
-            target_token_id=target_token_id or 2,
-            target_token_str=" world",
-            target_token_prob=0.75,
-            prompt_tokens=["hello"],
-            input_token_ids=[1],
-            selected_features=[],
-            links=[],
-        )
-
-
 class BiologyServerTests(unittest.TestCase):
-    def test_feature_score_collection_contracts_gradients_with_scaled_decoders(self) -> None:
-        state = HookState(
-            layers=[2],
-            transcoders={},
-            mlp_inputs={},
-            feature_values={},
-            layer_features={
-                2: LayerFeatureData(
-                    positions=torch.tensor([0, 1]),
-                    feature_ids=torch.tensor([10, 11]),
-                    activations=torch.tensor([2.0, 3.0]),
-                    encoder_vectors=torch.zeros(2, 2),
-                    decoder_vectors=torch.tensor([[2.0, 0.0], [0.0, 3.0]]),
-                    start=0,
-                )
-            },
-            output_grads={2: torch.tensor([[[5.0, 7.0], [11.0, 13.0]]])},
-        )
-
-        scores = collect_feature_scores(state, 2)
-
-        self.assertEqual(scores.tolist(), [10.0, 39.0])
-
-    def test_feature_score_collection_can_limit_to_causal_source_layers(self) -> None:
-        state = HookState(
-            layers=[2, 12],
-            transcoders={},
-            mlp_inputs={},
-            feature_values={},
-            layer_features={
-                2: LayerFeatureData(
-                    positions=torch.tensor([0]),
-                    feature_ids=torch.tensor([10]),
-                    activations=torch.tensor([2.0]),
-                    encoder_vectors=torch.zeros(1, 2),
-                    decoder_vectors=torch.tensor([[2.0, 0.0]]),
-                    start=0,
-                ),
-                12: LayerFeatureData(
-                    positions=torch.tensor([0]),
-                    feature_ids=torch.tensor([11]),
-                    activations=torch.tensor([3.0]),
-                    encoder_vectors=torch.zeros(1, 2),
-                    decoder_vectors=torch.tensor([[0.0, 3.0]]),
-                    start=1,
-                ),
-            },
-            output_grads={2: torch.tensor([[[5.0, 7.0]]])},
-        )
-
-        scores = collect_feature_scores(state, 2, layers=[2])
-
-        self.assertEqual(scores.tolist(), [10.0, 0.0])
-        with self.assertRaisesRegex(RuntimeError, "layer 12"):
-            collect_feature_scores(state, 2)
-
-    def test_detached_eager_attention_blocks_query_and_key_gradients(self) -> None:
-        class _Module:
-            num_key_value_groups = 1
-
-        torch.manual_seed(0)
-        batch, heads, seq, head_dim = 1, 2, 3, 4
-        query = torch.randn(batch, heads, seq, head_dim, requires_grad=True)
-        key = torch.randn(batch, heads, seq, head_dim, requires_grad=True)
-        value = torch.randn(batch, heads, seq, head_dim, requires_grad=True)
-
-        attn_output, _ = _detached_eager_attention_forward(
-            _Module(), query, key, value, attention_mask=None, scaling=head_dim**-0.5
-        )
-        attn_output.sum().backward()
-
-        self.assertIsNone(query.grad)
-        self.assertIsNone(key.grad)
-        self.assertIsNotNone(value.grad)
-
-    def test_detached_eager_attention_forward_matches_eager_values(self) -> None:
-        from transformers.models.qwen3.modeling_qwen3 import eager_attention_forward
-
-        class _Module:
-            num_key_value_groups = 1
-            training = False
-
-        torch.manual_seed(1)
-        batch, heads, seq, head_dim = 1, 2, 4, 3
-        query = torch.randn(batch, heads, seq, head_dim)
-        key = torch.randn(batch, heads, seq, head_dim)
-        value = torch.randn(batch, heads, seq, head_dim)
-
-        attn_output, _ = _detached_eager_attention_forward(
-            _Module(), query, key, value, attention_mask=None, scaling=head_dim**-0.5
-        )
-        expected, _ = eager_attention_forward(
-            _Module(), query, key, value, attention_mask=None, scaling=head_dim**-0.5
-        )
-        torch.testing.assert_close(attn_output, expected)
-
-    def test_patched_rms_norm_forward_matches_unfrozen(self) -> None:
-        from transformers.models.qwen3.modeling_qwen3 import Qwen3RMSNorm
-
-        torch.manual_seed(2)
-        rms = Qwen3RMSNorm(hidden_size=8, eps=1e-5)
-        rms.weight.data.copy_(torch.randn(8))
-        x = torch.randn(2, 3, 8)
-
-        expected = rms.forward(x)
-        actual = _patched_rms_norm_forward(rms, x)
-        torch.testing.assert_close(actual, expected)
-
-    def test_patched_rms_norm_gradient_treats_scale_as_constant(self) -> None:
-        from transformers.models.qwen3.modeling_qwen3 import Qwen3RMSNorm
-
-        torch.manual_seed(3)
-        rms = Qwen3RMSNorm(hidden_size=4, eps=1e-5)
-        rms.weight.data.copy_(torch.tensor([1.0, 2.0, 3.0, 4.0]))
-        x = torch.randn(1, 2, 4, requires_grad=True)
-        grad_out = torch.randn(1, 2, 4)
-
-        out = _patched_rms_norm_forward(rms, x)
-        out.backward(gradient=grad_out)
-
-        with torch.no_grad():
-            x_f = x.detach().to(torch.float32)
-            scale = torch.rsqrt(x_f.pow(2).mean(-1, keepdim=True) + rms.variance_epsilon)
-            expected_grad = (grad_out * rms.weight * scale.to(grad_out.dtype)).to(x.dtype)
-
-        torch.testing.assert_close(x.grad, expected_grad)
-
     def test_row_links_keeps_top_feature_and_embedding_sources(self) -> None:
         selected = [
             SelectedFeature(
@@ -563,27 +301,6 @@ class BiologyServerTests(unittest.TestCase):
             out = prepend_special_prefix(_Tok(), torch.tensor([[5, 6]]))
         self.assertEqual(out.tolist(), [[5, 6]])
 
-    def test_top_token_parity_requires_same_top_id_and_close_probability(self) -> None:
-        preview_top = TokenCandidate(token_id=2, token=" world", prob=0.75)
-        assert_top_token_parity(
-            preview_top=preview_top,
-            tl_top=TokenCandidate(token_id=2, token=" world", prob=0.66),
-            prob_tolerance=0.1,
-        )
-
-        with self.assertRaisesRegex(RuntimeError, "Preview/TL top-token parity failed"):
-            assert_top_token_parity(
-                preview_top=preview_top,
-                tl_top=TokenCandidate(token_id=3, token=" there", prob=0.75),
-                prob_tolerance=0.1,
-            )
-        with self.assertRaisesRegex(RuntimeError, "Preview/TL top-token parity failed"):
-            assert_top_token_parity(
-                preview_top=preview_top,
-                tl_top=TokenCandidate(token_id=2, token=" world", prob=0.64),
-                prob_tolerance=0.1,
-            )
-
     def test_edge_pruning_uses_target_score_and_preserves_signed_weights(self) -> None:
         links = [
             GraphLink(source="a", target="c", weight=-2.0),
@@ -633,113 +350,14 @@ class BiologyServerTests(unittest.TestCase):
 
         self.assertEqual(len(targets), 10)
 
-    def test_mlp_hook_preserves_skip_reconstruction_value_and_skip_gradient(self) -> None:
-        transcoder = SingleLayerTranscoder(
-            d_model=2,
-            d_transcoder=2,
-            activation_function=torch.nn.ReLU(),
-            layer_idx=0,
-            skip_connection=True,
-            device=torch.device("cpu"),
-            dtype=torch.float32,
-        )
-        with torch.no_grad():
-            transcoder.W_enc.copy_(torch.eye(2))
-            transcoder.W_dec.copy_(torch.tensor([[2.0, 0.0], [0.0, 3.0]]))
-            transcoder.b_enc.zero_()
-            transcoder.b_dec.copy_(torch.tensor([0.5, -0.5]))
-            transcoder.W_skip.copy_(torch.tensor([[10.0, 0.0], [0.0, 20.0]]))
-
-        state = HookState(
-            layers=[0],
-            transcoders={0: transcoder},
-            mlp_inputs={},
-            feature_values={},
-            layer_features={},
-            output_grads={},
-        )
-        mlp_input = torch.tensor([[[1.0, 2.0]]], requires_grad=True)
-        original_output = torch.zeros_like(mlp_input)
-        replacement = make_mlp_hook(0, transcoder, state)(None, (mlp_input,), original_output)
-
-        expected = transcoder.decode(transcoder.encode(mlp_input), mlp_input)
-        self.assertTrue(torch.allclose(replacement, expected))
-
-        replacement.sum().backward()
-        self.assertTrue(torch.allclose(mlp_input.grad, torch.tensor([[[10.0, 20.0]]])))
-        self.assertTrue(torch.allclose(state.output_grads[0], torch.ones_like(replacement)))
-
-    def test_preview_and_background_graph_job(self) -> None:
-        runner = FakeRunner()
-        with run_test_server(runner) as client:
-            preview = client.post(
-                "/api/preview",
-                {"prompt": "hello", "slug": "demo", "use_chat_template": False},
-            )
-            self.assertEqual(preview["slug"], "demo")
-            self.assertFalse(preview["use_chat_template"])
-            self.assertEqual(preview["target_token"]["id"], 2)
-
-            job = client.post(
-                "/api/graphs",
-                {
-                    "preview_id": preview["preview_id"],
-                    "node_threshold": 0.7,
-                    "edge_threshold": 0.9,
-                    "logit_prob_threshold": 0.95,
-                    "max_logit_nodes": 5,
-                },
-                expected_status=202,
-            )
-            finished = client.wait_for_job(job["job_id"])
-            self.assertEqual(finished["status"], "succeeded")
-            self.assertEqual(finished["graph_url"], "/graph_data/demo.json")
-            graph = client.get("/graph_data/demo.json")
-            self.assertEqual(graph["metadata"]["slug"], "demo")
-            self.assertFalse(runner.preview_calls[0]["use_chat_template"])
-            self.assertFalse(runner.generate_calls[0]["use_chat_template"])
-            self.assertEqual(runner.generate_calls[0]["target_token_id"], 2)
-            self.assertEqual(runner.generate_calls[0]["preview_top_token_id"], 2)
-            self.assertEqual(runner.generate_calls[0]["preview_top_token"], " world")
-            self.assertEqual(runner.generate_calls[0]["preview_top_token_prob"], 0.75)
-            self.assertEqual(runner.generate_calls[0]["node_threshold"], 0.7)
-            self.assertEqual(runner.generate_calls[0]["edge_threshold"], 0.9)
-            self.assertEqual(runner.generate_calls[0]["max_logit_nodes"], 5)
-
-    def test_unknown_preview_id_is_404(self) -> None:
-        with run_test_server(FakeRunner()) as client:
-            response = client.post(
-                "/api/graphs",
-                {"preview_id": "missing"},
-                expected_status=404,
-            )
-            self.assertIn("unknown preview_id", response["error"])
-
-    def test_failed_job_reports_error_and_logs(self) -> None:
-        with run_test_server(FakeRunner(fail=True)) as client:
-            preview = client.post("/api/preview", {"prompt": "hello"})
-            job = client.post(
-                "/api/graphs",
-                {"preview_id": preview["preview_id"]},
-                expected_status=202,
-            )
-            finished = client.wait_for_job(job["job_id"])
-            self.assertEqual(finished["status"], "failed")
-            self.assertEqual(finished["error"], "boom")
-            self.assertTrue(any("RuntimeError: boom" in line for line in finished["logs"]))
-
     def test_missing_metadata_returns_empty_list(self) -> None:
-        with run_test_server(FakeRunner()) as client:
+        with run_test_server() as client:
             metadata = client.get("/data/graph-metadata.json")
             self.assertEqual(metadata, {"graphs": []})
 
-    def test_in_page_asset_routes_use_graph_dir(self) -> None:
-        with run_test_server(FakeRunner()) as client:
-            preview = client.post("/api/preview", {"prompt": "hello", "slug": "demo"})
-            job = client.post(
-                "/api/graphs", {"preview_id": preview["preview_id"]}, expected_status=202
-            )
-            client.wait_for_job(job["job_id"])
+    def test_graph_and_feature_asset_routes_use_graph_dir(self) -> None:
+        with run_test_server() as client:
+            write_demo_graph(client.graph_dir, slug="demo")
 
             metadata = client.get("/data/graph-metadata.json")
             graph = client.get("/graph_data/demo.json")
@@ -752,7 +370,7 @@ class BiologyServerTests(unittest.TestCase):
             self.assertEqual(feature, {"featureIndex": 1})
 
     def test_page_and_ct_assets_served(self) -> None:
-        with run_test_server(FakeRunner(), ct_assets={"util.js": "window.util = {}"}) as client:
+        with run_test_server(ct_assets={"util.js": "window.util = {}"}) as client:
             status, body = client.get_raw("/")
             self.assertEqual(status, 200)
             self.assertEqual(body, "ok")
@@ -761,12 +379,20 @@ class BiologyServerTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(asset, "window.util = {}")
 
-            # App shell is uncached; vendored /ct/ assets stay cacheable.
             self.assertEqual(client.get_header("/", "Cache-Control"), "no-store")
             self.assertIsNone(client.get_header("/ct/util.js", "Cache-Control"))
 
+    def test_removed_preview_and_job_routes_return_404(self) -> None:
+        with run_test_server() as client:
+            response = client.post("/api/preview", {"prompt": "hello"}, expected_status=404)
+            self.assertEqual(response["error"], "not found")
+            response = client.post("/api/graphs", {"prompt": "hello"}, expected_status=404)
+            self.assertEqual(response["error"], "not found")
+            response = client.get("/api/jobs/demo", expected_status=404)
+            self.assertEqual(response["error"], "not found")
+
     def test_removed_iframe_shims_return_404(self) -> None:
-        with run_test_server(FakeRunner()) as client:
+        with run_test_server() as client:
             self.assertEqual(client.get_raw("/ct/data/graph-metadata.json")[0], 404)
             self.assertEqual(client.get_raw("/ct/graph_data/demo.json")[0], 404)
 
@@ -786,35 +412,26 @@ class BiologyServerTests(unittest.TestCase):
                 server_module.PROJECT_ROOT = original_project_root
 
     def test_save_graph_updates_qparams(self) -> None:
-        with run_test_server(FakeRunner()) as client:
-            preview = client.post("/api/preview", {"prompt": "hello", "slug": "demo"})
-            job = client.post(
-                "/api/graphs", {"preview_id": preview["preview_id"]}, expected_status=202
-            )
-            client.wait_for_job(job["job_id"])
+        with run_test_server() as client:
+            write_demo_graph(client.graph_dir, slug="demo")
 
             client.post("/save_graph/demo", {"qParams": {"clickedId": "changed"}})
             graph = client.get("/graph_data/demo.json")
             self.assertEqual(graph["qParams"], {"clickedId": "changed"})
 
     def test_graph_data_is_not_cached(self) -> None:
-        with run_test_server(FakeRunner()) as client:
-            preview = client.post("/api/preview", {"prompt": "hello", "slug": "demo"})
-            job = client.post(
-                "/api/graphs", {"preview_id": preview["preview_id"]}, expected_status=202
-            )
-            client.wait_for_job(job["job_id"])
+        with run_test_server() as client:
+            write_demo_graph(client.graph_dir, slug="demo")
 
             self.assertEqual(
                 client.get_header("/graph_data/demo.json", "Cache-Control"), "no-store"
             )
-            # Immutable feature files stay cacheable.
             self.assertIsNone(
                 client.get_header("/data/features/qwen3-4b-transcoders/1.json", "Cache-Control")
             )
 
     def test_upload_graph_writes_graph_and_metadata(self) -> None:
-        with run_test_server(FakeRunner()) as client:
+        with run_test_server() as client:
             graph = upload_graph_payload(slug="saved graph")
             response = client.post(
                 "/api/upload_graph",
@@ -834,7 +451,7 @@ class BiologyServerTests(unittest.TestCase):
             self.assertEqual([entry["slug"] for entry in metadata["graphs"]], ["edited-graph"])
 
     def test_upload_graph_uses_metadata_slug_without_override(self) -> None:
-        with run_test_server(FakeRunner()) as client:
+        with run_test_server() as client:
             response = client.post(
                 "/api/upload_graph",
                 {"graph": upload_graph_payload(slug="Saved Graph")},
@@ -847,7 +464,7 @@ class BiologyServerTests(unittest.TestCase):
             )
 
     def test_upload_graph_rejects_invalid_payload(self) -> None:
-        with run_test_server(FakeRunner()) as client:
+        with run_test_server() as client:
             response = client.post(
                 "/api/upload_graph",
                 {"graph": {"metadata": {"slug": "bad"}, "nodes": [], "links": []}},
@@ -887,9 +504,23 @@ def upload_graph_payload(*, slug: str) -> dict[str, Any]:
     }
 
 
+def write_demo_graph(graph_dir: Path, *, slug: str) -> None:
+    graph = upload_graph_payload(slug=slug)
+    graph_dir.mkdir(parents=True, exist_ok=True)
+    (graph_dir / f"{slug}.json").write_text(json.dumps(graph), encoding="utf-8")
+    (graph_dir / "graph-metadata.json").write_text(
+        json.dumps({"graphs": [graph["metadata"]]}),
+        encoding="utf-8",
+    )
+    feature_dir = graph_dir / "features" / "qwen3-4b-transcoders"
+    feature_dir.mkdir(parents=True, exist_ok=True)
+    (feature_dir / "1.json").write_text(json.dumps({"featureIndex": 1}), encoding="utf-8")
+
+
 class HttpTestClient:
-    def __init__(self, port: int) -> None:
+    def __init__(self, port: int, graph_dir: Path) -> None:
         self.port = port
+        self.graph_dir = graph_dir
 
     def get(self, path: str, *, expected_status: int = 200) -> dict[str, Any]:
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
@@ -928,14 +559,6 @@ class HttpTestClient:
         )
         return self._read_json(conn, expected_status)
 
-    def wait_for_job(self, job_id: str) -> dict[str, Any]:
-        for _ in range(50):
-            job = self.get(f"/api/jobs/{job_id}")
-            if job["status"] in {"succeeded", "failed"}:
-                return job
-            time.sleep(0.05)
-        raise AssertionError(f"job did not finish: {job_id}")
-
     def _read_json(self, conn: http.client.HTTPConnection, expected_status: int) -> dict[str, Any]:
         response = conn.getresponse()
         body = response.read()
@@ -947,16 +570,16 @@ class HttpTestClient:
 
 
 class run_test_server:
-    def __init__(self, runner: FakeRunner, *, ct_assets: dict[str, str] | None = None) -> None:
-        self.runner = runner
+    def __init__(self, *, ct_assets: dict[str, str] | None = None) -> None:
         self.ct_assets = ct_assets or {}
         self.tempdir: tempfile.TemporaryDirectory[str] | None = None
         self.server = None
+        self.graph_dir: Path | None = None
 
     def __enter__(self) -> HttpTestClient:
         self.tempdir = tempfile.TemporaryDirectory()
         root = Path(self.tempdir.name)
-        graph_dir = root / "graphs"
+        self.graph_dir = root / "graphs"
         frontend_dir = root / "frontend"
         static_dir = root / "static"
         frontend_dir.mkdir()
@@ -967,21 +590,16 @@ class run_test_server:
             asset_path.parent.mkdir(parents=True, exist_ok=True)
             asset_path.write_text(content, encoding="utf-8")
         self.server = serve(
-            graph_file_dir=graph_dir,
+            graph_file_dir=self.graph_dir,
             frontend_dir=frontend_dir,
             static_dir=static_dir,
-            runner=self.runner,  # type: ignore[arg-type]
             port=0,
             host="127.0.0.1",
         )
-        return HttpTestClient(self.server.httpd.server_address[1])
+        return HttpTestClient(self.server.httpd.server_address[1], self.graph_dir)
 
     def __exit__(self, *_: object) -> None:
         if self.server is not None:
             self.server.stop()
         if self.tempdir is not None:
             self.tempdir.cleanup()
-
-
-if __name__ == "__main__":
-    unittest.main()

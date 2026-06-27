@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=1100, initial-scale=1">
-<title>Biology Attribution Server</title>
+<title>Biology Attribution Graphs</title>
 
 <link rel="stylesheet" href="/ct/style.css">
 <link rel="stylesheet" href="/ct/attribution_graph/cg.css">
@@ -9,52 +9,22 @@
 <link rel="stylesheet" href="/ct/feature_examples/feature-examples.css">
 <link rel="stylesheet" href="/biology-server.css">
 
-<main class="server-shell">
-  <section class="prompt-panel">
-    <div class="prompt-controls">
-      <textarea id="prompt" spellcheck="false">Fact: the capital of the state containing Dallas is</textarea>
-      <div class="settings-row">
-        <label>
-          Slug
-          <input id="slug" type="text" placeholder="auto">
-        </label>
-        <label>
-          Node threshold
-          <input id="node-threshold" type="number" min="0" max="1" step="0.01" value="0.8">
-        </label>
-        <label>
-          Edge threshold
-          <input id="edge-threshold" type="number" min="0" max="1" step="0.01" value="0.98">
-        </label>
-        <label>
-          Logit mass
-          <input id="logit-prob-threshold" type="number" min="0" max="1" step="0.01" value="0.95">
-        </label>
-        <label>
-          Max logits
-          <input id="max-logit-nodes" type="number" min="1" step="1" value="10">
-        </label>
-        <label class="checkbox-label">
-          <input id="use-chat-template" type="checkbox" checked>
-          Chat template
-        </label>
-        <label>
-          Graph JSON
-          <input id="upload-file" type="file" accept=".json,application/json">
-        </label>
-        <button id="preview-button" type="button">Preview</button>
-        <button id="generate-button" type="button" disabled>Generate</button>
-        <button id="upload-button" type="button" disabled>Upload</button>
-      </div>
-    </div>
-    <div class="status-panel">
-      <div class="status-header">
-        <div class="status-line" id="status">Ready</div>
-      </div>
-      <div class="target-token" id="target-token"></div>
-      <div class="top-tokens" id="top-tokens"></div>
-      <pre id="job-log"></pre>
-    </div>
+<main class="viewer-shell">
+  <section class="viewer-toolbar">
+    <label>
+      Graph
+      <select id="graph-select"></select>
+    </label>
+    <label>
+      Upload slug
+      <input id="slug" type="text" placeholder="auto">
+    </label>
+    <label>
+      Graph JSON
+      <input id="upload-file" type="file" accept=".json,application/json">
+    </label>
+    <button id="upload-button" type="button" disabled>Upload</button>
+    <div class="status-line" id="status">Loading graphs...</div>
   </section>
 
   <div class="tooltip tooltip-hidden"></div>

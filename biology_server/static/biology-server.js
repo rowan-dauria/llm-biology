@@ -1,24 +1,12 @@
 ;(function () {
   const els = {
-    prompt: document.querySelector('#prompt'),
+    graphSelect: document.querySelector('#graph-select'),
     slug: document.querySelector('#slug'),
-    nodeThreshold: document.querySelector('#node-threshold'),
-    edgeThreshold: document.querySelector('#edge-threshold'),
-    logitProbThreshold: document.querySelector('#logit-prob-threshold'),
-    maxLogitNodes: document.querySelector('#max-logit-nodes'),
-    useChatTemplate: document.querySelector('#use-chat-template'),
     uploadFile: document.querySelector('#upload-file'),
-    previewButton: document.querySelector('#preview-button'),
-    generateButton: document.querySelector('#generate-button'),
     uploadButton: document.querySelector('#upload-button'),
     status: document.querySelector('#status'),
-    targetToken: document.querySelector('#target-token'),
-    topTokens: document.querySelector('#top-tokens'),
-    jobLog: document.querySelector('#job-log'),
   }
 
-  let preview = null
-  let activeJobId = null
   const graphStateParamKeys = [
     'pinnedIds',
     'supernodes',
@@ -29,90 +17,41 @@
     'clerps',
   ]
 
-  els.previewButton.addEventListener('click', previewPrompt)
-  els.generateButton.addEventListener('click', generateGraph)
-  els.useChatTemplate.addEventListener('change', updateGenerateButton)
+  const graphView = createGraphView(d3.select('.nav'), d3.select('#graph'))
+
+  els.graphSelect.addEventListener('change', () => {
+    const slug = els.graphSelect.value
+    if (slug) renderGraph(slug, { resetGraphState: true })
+  })
   els.uploadFile.addEventListener('change', () => {
     els.uploadButton.disabled = !selectedUploadFile()
   })
   els.uploadButton.addEventListener('click', uploadGraph)
 
-  const graphView = createGraphView(d3.select('.nav'), d3.select('#graph'))
+  loadGraphList()
 
-  const initialSlug = util.params.get('slug')
-  if (initialSlug) renderGraph(initialSlug)
-
-  async function previewPrompt() {
-    setBusy(true)
-    els.generateButton.disabled = true
-    els.jobLog.textContent = ''
-    setStatus('Previewing next token...')
+  async function loadGraphList(preferredSlug) {
     try {
-      preview = await postJson('/api/preview', {
-        prompt: els.prompt.value,
-        slug: cleanValue(els.slug.value),
-        use_chat_template: els.useChatTemplate.checked,
+      const meta = await getJson('/data/graph-metadata.json')
+      const graphs = Array.isArray(meta.graphs) ? meta.graphs : []
+      els.graphSelect.innerHTML = ''
+      graphs.forEach(graph => {
+        if (!graph || typeof graph.slug !== 'string') return
+        const option = document.createElement('option')
+        option.value = graph.slug
+        option.textContent = graph.prompt || graph.slug
+        els.graphSelect.appendChild(option)
       })
-      renderPreview(preview)
-      updateGenerateButton()
-      setStatus('Preview ready')
-    } catch (err) {
-      preview = null
-      renderError(err)
-    } finally {
-      setBusy(false)
-    }
-  }
 
-  async function generateGraph() {
-    if (!preview || preview.use_chat_template !== els.useChatTemplate.checked) return
-    setBusy(true)
-    els.generateButton.disabled = true
-    setStatus('Queued graph generation...')
-    try {
-      const job = await postJson('/api/graphs', {
-        preview_id: preview.preview_id,
-        slug: cleanValue(els.slug.value),
-        node_threshold: Number(els.nodeThreshold.value),
-        edge_threshold: Number(els.edgeThreshold.value),
-        logit_prob_threshold: Number(els.logitProbThreshold.value),
-        max_logit_nodes: Number(els.maxLogitNodes.value),
-      })
-      activeJobId = job.job_id
-      pollJob(job.job_id)
-    } catch (err) {
-      setBusy(false)
-      els.generateButton.disabled = false
-      renderError(err)
-    }
-  }
-
-  function updateGenerateButton() {
-    els.generateButton.disabled =
-      !preview || preview.use_chat_template !== els.useChatTemplate.checked
-  }
-
-  async function pollJob(jobId) {
-    if (activeJobId !== jobId) return
-    try {
-      const job = await getJson(`/api/jobs/${jobId}`)
-      renderJob(job)
-      if (job.status === 'succeeded') {
-        setBusy(false)
-        els.generateButton.disabled = false
-        renderGraph(job.slug, { resetGraphState: true })
+      const urlSlug = util.params.get('slug')
+      const slug = preferredSlug || urlSlug || graphs[0]?.slug
+      if (!slug) {
+        setStatus('No graphs found')
         return
       }
-      if (job.status === 'failed') {
-        setBusy(false)
-        els.generateButton.disabled = false
-        setStatus(job.error ? `Graph generation failed: ${job.error}` : 'Graph generation failed')
-        return
-      }
-      window.setTimeout(() => pollJob(jobId), 1500)
+      els.graphSelect.value = slug
+      renderGraph(slug)
     } catch (err) {
-      setBusy(false)
-      els.generateButton.disabled = false
       renderError(err)
     }
   }
@@ -125,10 +64,6 @@
     }
 
     setBusy(true)
-    activeJobId = null
-    preview = null
-    els.generateButton.disabled = true
-    els.jobLog.textContent = ''
     setStatus('Uploading graph...')
 
     try {
@@ -144,45 +79,13 @@
         slug: cleanValue(els.slug.value),
         filename: file.name,
       })
-      renderPreview(null)
       setStatus(`Uploaded: ${uploaded.slug}`)
+      await loadGraphList(uploaded.slug)
       renderGraph(uploaded.slug, { resetGraphState: true })
     } catch (err) {
       renderError(err)
     } finally {
       setBusy(false)
-    }
-  }
-
-  function renderPreview(data) {
-    if (!data) {
-      els.targetToken.textContent = ''
-      els.topTokens.innerHTML = ''
-      return
-    }
-    const token = data.target_token
-    els.targetToken.textContent = `Target: ${JSON.stringify(token.text)}  id=${token.id}  p=${formatProb(token.prob)}`
-    els.topTokens.innerHTML = ''
-    data.top_tokens.forEach(item => {
-      const chip = document.createElement('span')
-      chip.className = 'token-chip'
-      chip.textContent = `${JSON.stringify(item.text)} ${formatProb(item.prob)}`
-      els.topTokens.appendChild(chip)
-    })
-  }
-
-  function renderJob(job) {
-    const bits = [`${job.status}: ${job.slug}`]
-    if (job.feature_nodes !== null && job.feature_nodes !== undefined) {
-      bits.push(`${job.feature_nodes} nodes`)
-    }
-    if (job.links !== null && job.links !== undefined) {
-      bits.push(`${job.links} links`)
-    }
-    setStatus(bits.join(' · '))
-    els.jobLog.textContent = (job.logs || []).slice(-18).join('\n')
-    if (job.error) {
-      els.jobLog.textContent = `${job.error}\n${els.jobLog.textContent}`
     }
   }
 
@@ -208,6 +111,7 @@
     const debouncedRender = util.debounce(render, 300)
 
     async function show(slug) {
+      setStatus(`Loading: ${slug}`)
       const meta = await util.getFile('./data/graph-metadata.json', false)
       const graphData = await util.getFile(`./graph_data/${slug}.json`, false)
       activeGraphData = graphData
@@ -235,6 +139,7 @@
 
       buildNav()
       render()
+      setStatus(currentGraph?.prompt || slug)
     }
 
     function buildNav() {
@@ -464,7 +369,6 @@
   }
 
   function setBusy(isBusy) {
-    els.previewButton.disabled = isBusy
     els.uploadButton.disabled = isBusy || !selectedUploadFile()
   }
 
@@ -474,9 +378,5 @@
 
   function renderError(err) {
     setStatus(err.message || String(err))
-  }
-
-  function formatProb(value) {
-    return Number(value).toFixed(4)
   }
 })()
