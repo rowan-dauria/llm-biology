@@ -1,139 +1,127 @@
 # llm-biology
-MPhil project using SAEs to understand LLM reasoning. Uses the [circuit-tracer](https://github.com/decoderesearch/circuit-tracer) frontend and a custom attribution backend.
 
-<img width="1728" height="753" alt="Screenshot 2026-05-28 at 16 13 35" src="https://github.com/user-attachments/assets/176a9fde-8446-45dd-83d8-21936b442670" />
+Custom TransformerLens circuit-tracing code for the MPhil Qwen3-4B attribution
+experiments. This repo is the submission codebase; generated data lives outside
+it in the root project under `../data/llm-biology/`.
 
-## Development
+The pipeline uses pretrained Qwen3-4B transcoders from
+`mwhanna/qwen3-4b-transcoders`. It only uses circuit-tracer's per-layer
+`SingleLayerTranscoder` and `load_transcoder`; graph construction, attribution,
+pruning, interventions, labels, and exports are project code.
 
-The full `environment.yml` is for the HPC Linux/CUDA environment. On an Apple
-Silicon Mac, use the smaller Mac environment file:
+## Layout
+
+- `biology_server/`: TL-backed attribution runner plus a lightweight
+  Neuronpedia-compatible graph viewer.
+- `feature_lookup/`: top-K activation collection, window reconstruction,
+  LLM labelling, and graph-label patching.
+- `scripts/`: CSD3 wrappers and final report analysis scripts.
+- `data/neuronpedia-schemas/`: canonical frontend export schemas; do not edit
+  them to fit new output.
+
+## Environment
+
+On CSD3, use the existing `qwen-sae` conda environment. It intentionally carries
+the newer `transformers` / `huggingface_hub` pair needed by the Gemma labeller;
+do not reinstall `circuit-tracer` or `transformer-lens` in that env just to
+satisfy metadata constraints.
+
+For local linting/dev hooks only:
 
 ```bash
-conda activate qwen-sae-mac
-conda env update -f environment-mac.yml
+python -m pip install "pre-commit" "ruff" "pyright[nodejs]"
 pre-commit install
 ```
 
-If you only need the git hooks in an already-working environment, install the
-dev tools directly:
+## Attribution Graphs
+
+Generate a graph on CSD3 with the notebook-equivalent runner:
 
 ```bash
-python -m pip install "pre-commit==4.5.1" "ruff==0.15.11" "pyright[nodejs]==1.1.408"
-pre-commit install
+sbatch scripts/attribution_like_notebook.wilkes3
 ```
 
-Run the hooks across the repo with:
+The direct Python entry point is:
 
 ```bash
-pre-commit run --all-files
+python scripts/attribution_like_notebook.py \
+  --prompt "Fact: the capital of the state containing Dallas is" \
+  --dir-name csd3_attribution_graphs
 ```
 
-## Biology server
+The default tracked layers are `2,12,24,33`. Use completion prompts by default;
+pass `--chat-template` for refusal/chat cases.
 
-Start the prompt-preview backend and bundled circuit-tracer wrapper UI:
+## Feature Labels
+
+Build top-K activation windows, then label and patch graph-surfaced features:
 
 ```bash
-python -m biology_server --port 8041 --graph-file-dir data/ui_graphs
+sbatch scripts/run_build_topk.slurm
+sbatch scripts/run_label_features.slurm
+SLUG=<graph-slug> sbatch scripts/run_label_from_graph.slurm
 ```
 
-The equivalent script wrapper is:
+Top-K and label outputs are generated under `data/` at runtime and are ignored
+by git. Existing project artifacts were moved to `../data/llm-biology/`.
+
+## Graph Viewer
+
+The server is viz-only: it serves existing graph JSONs, lets you upload an
+exported graph, and saves frontend `qParams`. It does not run model inference.
 
 ```bash
-python scripts/serve_biology_server.py --port 8041
+python -m biology_server \
+  --port 8041 \
+  --graph-file-dir ../data/llm-biology/ui_graphs
 ```
 
-Executable entry points live in `scripts/`; for example:
+The viewer expects the circuit-tracer frontend assets in a sibling
+`../circuit-tracer` checkout, or pass `--frontend-dir` explicitly.
+
+## Report Analyses
+
+Final-method wrappers:
 
 ```bash
-python scripts/generate_attribution_graph.py --prompt "The biological function of hemoglobin is to"
-python scripts/label_from_graph.py --slug <slug> --dry-run
-```
-
-## Causal interventions (CSD3 / Wilkes3)
-
-Two SLURM wrappers steer transcoder features on the local replacement model for
-a named `qParams` supernode in an exported attribution graph. Submit from the
-repo on CSD3 (the wrappers `cd` into `llm-biology` and write output next to the
-graph JSON unless `OUTPUT_JSON` is set). Paths are relative to `llm-biology/` or
-absolute.
-
-**Magnitude sweep** — steers the supernode's real constituents across
-multiplicative factors (`m * clean_activation`) and records the target
-logit/probability deltas:
-
-```bash
-sbatch scripts/sweep_supernode_interventions.wilkes3 <graph.json> "<Supernode label>"
-# Optional env: MAGNITUDES='-1,0,1,2' OUTPUT_JSON=/path/out.json EXTRA_ARGS='--measure supernode'
-```
-
-**Random size-matched baseline** — the null for the sweep: draws `N` (default
-100) random feature sets matching the supernode's `(layer, pos)` footprint and
-size, sweeps each, and reports per-magnitude targeted-vs-baseline percentiles,
-empirical p-value and z-score. Plot the targeted curve against the baseline band
-(use the spread, not SEM):
-
-```bash
-sbatch scripts/bootstrap_random_supernode_baseline.wilkes3 <graph.json> "<Supernode label>"
-# Optional env:
-#   N_BOOTSTRAP=200          number of random draws (p-value resolution = 1/N)
-#   SEED=0                    RNG seed for reproducible draws
-#   MAGNITUDES='-1,0,1,2'     comma-separated steering factors
-#   OUTPUT_JSON=/path/out.json
-#   EXTRA_ARGS='--sampling global-active'   # or --match-magnitude-tol 1.0, --layers ...
-```
-
-**Per-cell decomposition** — to show which `(layer, pos)` cell drives the
-baseline's variance, restrict the run (targeted sub-sweep *and* baseline draws)
-to a subset of the supernode's cells with `--restrict-cells`. `clean_prob` stays
-the full-model value, so the outputs overlay directly on the full run. Submit one
-job per cell group and compare the bands; the high-leverage final-layer/target
-cell typically reproduces nearly the whole band, the rest a thin one:
-
-```bash
-# final transcoder layer at the target position (the 5 Texas features there):
-EXTRA_ARGS='--restrict-cells 33_10' sbatch \
-  scripts/bootstrap_random_supernode_baseline.wilkes3 <graph.json> Texas
-# the remaining cells:
-EXTRA_ARGS='--restrict-cells 12_9,24_9,24_10' sbatch \
-  scripts/bootstrap_random_supernode_baseline.wilkes3 <graph.json> Texas
-```
-
-Cells are `layer_pos` tokens; output filenames gain a `__cells-…__` tag so the
-runs don't collide.
-
-**Steerable ceiling (layer-coverage diagnostic)** — to test whether an
-underwhelming intervention is just a consequence of the small tracked-layer
-subset, this measures how much of the target logit the covered features even
-control, before steering anything:
-
-```bash
+sbatch scripts/run_replacement_fidelity.slurm
+sbatch scripts/sweep_supernode_interventions.wilkes3 <graph.json> Texas
+sbatch scripts/bootstrap_random_supernode_baseline.wilkes3 <graph.json> Texas
 sbatch scripts/steerable_ceiling.wilkes3 <graph.json> Texas
-# Optional env: OUTPUT_JSON=/path/out.json EXTRA_ARGS='--layers 2,12,24,33 --chat-template'
+sbatch scripts/steer_supernode_top_logits.wilkes3 <graph.json> Texas
 ```
 
-It computes two things on one graph (no sweep needed):
-
-- **#1 read-off** — with attention/LayerNorm frozen the target logit is affine in
-  the feature activations (`z_t = const + Σ a·g`); one linearised backward gives
-  the direct logit mass `Σ a·g` carried by all tracked features (the ceiling on
-  what steering at this scope can move), the share at the target position, and the
-  supernode's own share. `const + total_mass_all` reproduces `z_t` to float
-  precision — printed as `verification_residual`.
-- **#2 intervention** — zeroing *all* tracked features gives the background
-  prediction (empirical `const`, confirming #1); zeroing just the supernode gives
-  its control.
-
-The printed `VERDICT` flags whether the result is coverage-limited (removing every
-tracked feature barely moves the prediction ⇒ generate graphs on more layers),
-supernode-incomplete, or genuinely leverage-bound (more layers unlikely to help).
-To sweep coverage, regenerate the graph at several `--layers` sets (same prompt /
-target) and compare the ceiling across them.
-
-Both wrappers default to `MAGNITUDES='-2,-1,0,0.5,1,1.5,...,8'` (0.5 steps over
-0–8, plus −1 and −2); the supernode label
-must match a `qParams.supernodes` entry exactly (case-insensitive). Run either
-Python script directly with `--help` to see all options:
+Plot helpers consume the JSON outputs:
 
 ```bash
-python scripts/bootstrap_random_supernode_baseline.py --help
+python scripts/plot_odds_vs_steering.py <baseline.json> <sweep.json>
+python scripts/plot_steering_top_logits.py <sweep.json>
+python scripts/plot_intervention_comparison.py <sweep-a.json> <sweep-b.json> --output out.png
+```
+
+## Heretic Refusal Runs
+
+The Heretic changes are kept as a companion fork, not vendored here. See
+`docs/heretic-refusal.md` for the exact branch/commit and reproduction notes.
+The submission repo contains the graph/comparison wrappers:
+
+```bash
+sbatch scripts/attribution_like_notebook_base_refusal.wilkes3
+sbatch scripts/attribution_like_notebook_heretic_trial114.wilkes3
+sbatch scripts/compare_cross_model_feature_activations.wilkes3
+```
+
+## Tests
+
+Do not run the full test suite on a laptop; several tests can load sizeable
+models. Submit the CSD3 wrapper instead:
+
+```bash
+sbatch scripts/run_tests.wilkes3
+```
+
+To narrow the run:
+
+```bash
+PYTEST_ARGS="tests/test_biology_server.py -q" sbatch scripts/run_tests.wilkes3
 ```

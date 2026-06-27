@@ -1,9 +1,61 @@
+[project]
+name = "llm-biology"
+version = "0.1.0"
+description = "Custom TransformerLens circuit tracing pipeline for Qwen3-4B biology-style attribution graphs."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "accelerate",
+    "circuit-tracer",
+    "datasets",
+    "fsspec",
+    "huggingface-hub",
+    "matplotlib",
+    "numpy",
+    "safetensors",
+    "torch",
+    "tqdm",
+    "transformer-lens",
+    "transformers",
+    "zstandard",
+]
+
+[project.optional-dependencies]
+api-labels = [
+    "anthropic",
+    "openai",
+]
+dev = [
+    "pre-commit",
+    "pyright[nodejs]",
+    "pytest",
+    "ruff",
+]
+profiling = [
+    "memory-profiler",
+]
+
+[project.scripts]
+biology-server = "biology_server.server:main"
+
+[tool.setuptools.packages.find]
+include = [
+    "biology_server*",
+    "feature_lookup*",
+]
+
+[tool.setuptools.package-data]
+biology_server = [
+    "static/*",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 extend-exclude = [
     "venv",
-    "mlp_activations/data",
+    "data/feature_topk",
+    "data/ui_graphs",
 ]
 
 [tool.ruff.lint]
@@ -33,7 +85,8 @@ exclude = [
     ".git",
     ".ruff_cache",
     "venv",
-    "mlp_activations/data",
+    "data/feature_topk",
+    "data/ui_graphs",
     "notebooks",
 ]
 reportMissingTypeStubs = false

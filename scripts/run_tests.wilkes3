@@ -1,6 +1,6 @@
 #!/bin/bash
 #!
-#! SLURM job script for replacement-model fidelity evaluation on Wilkes3 (A100).
+#! SLURM job script for the llm-biology test suite on Wilkes3 (A100).
 #! Based on slurms/slurm_submit.wilkes3.
 #!
 
@@ -10,7 +10,7 @@
 
 #! sbatch directives begin here ###############################
 #! Name of the job:
-#SBATCH -J fidelity
+#SBATCH -J llm_bio_tests
 #! Which project should be charged (NB Wilkes2 projects end in '-GPU'):
 #SBATCH -A MPHIL-DIS-SL2-GPU
 #! How many whole nodes should be allocated?
@@ -67,12 +67,13 @@ workdir="/home/rd761/mphil-project/llm-biology"
 #! Are you using OpenMP (NB this is unrelated to OpenMPI)? If so increase this
 #! safe value to no more than 128:
 export OMP_NUM_THREADS=1
+export PYTHONPATH="$workdir:${PYTHONPATH:-}"
 
 #! Full path to application executable:
 application="srun"
 
 #! Run options for the application:
-options="python -u scripts/measure_replacement_fidelity.py --n-chunks ${N_CHUNKS:-200} --chunk-len ${CHUNK_LEN:-512} --output-dir ${OUTPUT_DIR:-data/fidelity}"
+options="python -m pytest ${PYTEST_ARGS:-tests -q}"
 
 #! Number of MPI tasks to be started by the application per node and in total (do not change):
 np=$[${numnodes}*${mpi_tasks_per_node}]

@@ -1,4 +1,4 @@
-"""Draft visualisation of a supernode steering sweep's top-token redistribution.
+"""Visualise a supernode steering sweep's top-token redistribution.
 
 Consumes the JSON written by ``sweep_supernode_interventions.py`` (which records
 ``top_intervened_tokens`` per magnitude) and shows where next-token probability
@@ -11,7 +11,7 @@ by raw token string:
 - Bottom: log-y trajectories of the same tokens, to expose the smaller gains
   (e.g. " Texas", " Houston") that the linear stack hides.
 
-Draft quality, not publication polish.
+Use this for the report supplement's top-token redistribution figure.
 """
 
 from __future__ import annotations
