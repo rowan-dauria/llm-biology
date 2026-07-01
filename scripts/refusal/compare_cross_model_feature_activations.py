@@ -281,6 +281,8 @@ def measure_model(
     rows: list[PanelRow],
     layers: list[int],
     prompt_format: str,
+    tl_model_id: str | None = None,
+    tokenizer_id: str | None = None,
 ) -> ModelMeasurement:
     import torch
     from transformers import AutoTokenizer
@@ -293,11 +295,26 @@ def measure_model(
     device, dtype = pick_device_dtype()
     LOGGER.info("loading model=%s device=%s dtype=%s", model_id, device, dtype)
 
-    tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=CACHE_DIR, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        tokenizer_id or model_id, cache_dir=CACHE_DIR, trust_remote_code=True
+    )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = load_replacement_model(model_id, device=device, dtype=dtype, cache_dir=CACHE_DIR)
+    # A local merged checkpoint (e.g. an obliterated/jailbroken export) isn't a
+    # HookedTransformer-recognised architecture name. In that case tl_model_id
+    # carries the base architecture for TransformerLens while model_id is
+    # loaded as the actual weights via hf_model, mirroring
+    # BiologyAttributionRunner._ensure_loaded.
+    resolved_tl_model_id = tl_model_id or model_id
+    hf_model_id = model_id if tl_model_id and tl_model_id != model_id else None
+    model = load_replacement_model(
+        resolved_tl_model_id,
+        device=device,
+        dtype=dtype,
+        cache_dir=CACHE_DIR,
+        hf_model_id=hf_model_id,
+    )
     transcoders = load_transcoders(layers, device=device, dtype=dtype)
 
     activations: dict[tuple[str, FeatureKey], float] = {}
@@ -453,12 +470,37 @@ def parse_args() -> argparse.Namespace:
         help="Model/path in which to measure the curated source features.",
     )
     parser.add_argument(
+        "--comparison-tl-model-id",
+        default=None,
+        help=(
+            "TransformerLens architecture id for --comparison-model-id, e.g. "
+            "Qwen/Qwen3-4B. Set this when --comparison-model-id points at a local "
+            "merged checkpoint (e.g. an obliterated/jailbroken export) rather than "
+            "a HookedTransformer-recognised name."
+        ),
+    )
+    parser.add_argument(
+        "--comparison-tokenizer-id",
+        default=None,
+        help="Tokenizer source for --comparison-model-id. Defaults to --comparison-model-id.",
+    )
+    parser.add_argument(
         "--source-model-id",
         default=None,
         help=(
             "Optional model/path for measuring source activations. If omitted, every "
             "panel row must contain source_activation/graph_activation/activation."
         ),
+    )
+    parser.add_argument(
+        "--source-tl-model-id",
+        default=None,
+        help="TransformerLens architecture id for --source-model-id (see --comparison-tl-model-id).",
+    )
+    parser.add_argument(
+        "--source-tokenizer-id",
+        default=None,
+        help="Tokenizer source for --source-model-id. Defaults to --source-model-id.",
     )
     parser.add_argument(
         "--prompt",
@@ -540,6 +582,8 @@ def main() -> None:
             rows=panel_rows,
             layers=layers,
             prompt_format=prompt_format,
+            tl_model_id=args.source_tl_model_id,
+            tokenizer_id=args.source_tokenizer_id,
         )
 
     comparison_measurement = measure_model(
@@ -547,6 +591,8 @@ def main() -> None:
         rows=panel_rows,
         layers=layers,
         prompt_format=prompt_format,
+        tl_model_id=args.comparison_tl_model_id,
+        tokenizer_id=args.comparison_tokenizer_id,
     )
 
     output_rows: list[dict[str, Any]] = []
