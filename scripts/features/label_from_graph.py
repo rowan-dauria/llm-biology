@@ -20,9 +20,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from feature_lookup.graph_targets import GraphTarget, select_unlabeled_targets  # noqa: E402
-from feature_lookup.labels import load_feature_labels  # noqa: E402
-from feature_lookup.patch_graph_labels import DEFAULT_SCAN_DIR, patch_graph  # noqa: E402
+from llm_biology.features.graph_targets import GraphTarget, select_unlabeled_targets  # noqa: E402
+from llm_biology.features.labels import load_feature_labels  # noqa: E402
+from llm_biology.features.patch_graph_labels import DEFAULT_SCAN_DIR, patch_graph  # noqa: E402
 
 DEFAULT_GRAPH_DIR = PROJECT_ROOT / "data" / "ui_graphs"
 DEFAULT_TOPK_DIR = PROJECT_ROOT / "data" / "feature_topk" / "150k-pile"
@@ -123,7 +123,7 @@ def main() -> None:
         return
 
     # Deferred so --help / --dry-run don't require torch.
-    from feature_lookup.label_features import label_features_subset
+    from llm_biology.features.label_features import label_features_subset
 
     targets_by_layer: dict[int, list[GraphTarget]] = defaultdict(list)
     for target in targets:

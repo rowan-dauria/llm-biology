@@ -19,12 +19,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from biology_server.circuit_graph_export import write_graph_metadata
+from llm_biology.attribution.circuit_graph_export import write_graph_metadata
 
 logger = logging.getLogger(__name__)
 logger.propagate = False
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_GRAPH_DIR = PROJECT_ROOT / "data" / "ui_graphs"
 DEFAULT_STATIC_DIR = Path(__file__).parent / "static"
 GZIP_MIN_BYTES = 1 << 20

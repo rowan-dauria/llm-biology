@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from feature_lookup.labels import load_feature_labels
+from llm_biology.features.labels import load_feature_labels
 
 
 class LoadFeatureLabelsTests(unittest.TestCase):
@@ -42,7 +42,7 @@ class CorpusPartitioningTests(unittest.TestCase):
     def test_partitioning(self) -> None:
         import torch
 
-        from feature_lookup.corpus import iter_batches
+        from llm_biology.features.corpus import iter_batches
 
         class MockTokenizer:
             def __init__(self):
@@ -86,7 +86,7 @@ class TopKMergingTests(unittest.TestCase):
     def test_merge_worker_files(self) -> None:
         import torch
 
-        from feature_lookup import build_topk
+        from llm_biology.features import build_topk
 
         with tempfile.TemporaryDirectory() as tmpdir:
             orig_output_dir = build_topk.OUTPUT_DIR
@@ -151,8 +151,8 @@ class PromptIdRecoveryTests(unittest.TestCase):
         return f"jsonl:{jsonl_path}"
 
     def test_sharded_ids_round_trip_to_text(self) -> None:
-        from feature_lookup.corpus import iter_texts
-        from feature_lookup.windows import collect_prompt_texts
+        from llm_biology.features.corpus import iter_texts
+        from llm_biology.features.windows import collect_prompt_texts
 
         with tempfile.TemporaryDirectory() as tmpdir:
             spec = self._write_corpus(tmpdir, 10)
@@ -171,8 +171,8 @@ class PromptIdRecoveryTests(unittest.TestCase):
             self.assertEqual(recovered, {pid: seen[pid] for pid in needed})
 
     def test_single_worker_ids_are_enumerate_index(self) -> None:
-        from feature_lookup.corpus import iter_texts
-        from feature_lookup.windows import collect_prompt_texts
+        from llm_biology.features.corpus import iter_texts
+        from llm_biology.features.windows import collect_prompt_texts
 
         with tempfile.TemporaryDirectory() as tmpdir:
             spec = self._write_corpus(tmpdir, 5)

@@ -3,7 +3,7 @@
 The input graph is the Neuronpedia-compatible attribution JSON exported by this
 project. The script looks up a named qParams supernode, parses its constituent
 feature node ids, jointly steers those features with
-``biology_server.tl_intervention.run_feature_intervention``, and writes a
+``llm_biology.interventions.tl_intervention.run_feature_intervention``, and writes a
 JSON summary of the logit and feature-activation effects at each magnitude.
 """
 
@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from biology_server.intervention_utils import (  # noqa: E402
+from llm_biology.interventions.common import (  # noqa: E402
     find_supernode,
     graph_feature_keys,
     graph_nodes_by_id,
@@ -47,7 +47,7 @@ def finite_or_none(value: float) -> float | None:
 
 
 def default_output_path(graph_path: Path, supernode_name: str) -> Path:
-    from biology_server.attribution import slugify
+    from llm_biology.attribution.attribution import slugify
 
     stamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     stem = graph_path.stem
@@ -113,17 +113,17 @@ def main() -> None:
 
     from transformers import AutoTokenizer
 
-    from biology_server.attribution import (
+    from llm_biology.attribution.attribution import (
         CACHE_DIR,
         load_transcoders,
         pick_device_dtype,
         prepend_special_prefix,
     )
-    from biology_server.tl_intervention import (
+    from llm_biology.interventions.tl_intervention import (
         FeatureIntervention,
         run_feature_intervention,
     )
-    from biology_server.tl_model import load_replacement_model
+    from llm_biology.model.tl_model import load_replacement_model
 
     graph_path = args.graph_json.expanduser().resolve()
     graph = load_graph(graph_path)

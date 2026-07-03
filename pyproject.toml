@@ -36,16 +36,15 @@ profiling = [
 ]
 
 [project.scripts]
-biology-server = "biology_server.server:main"
+biology-server = "llm_biology.viewer.server:main"
 
 [tool.setuptools.packages.find]
 include = [
-    "biology_server*",
-    "feature_lookup*",
+    "llm_biology*",
 ]
 
 [tool.setuptools.package-data]
-biology_server = [
+"llm_biology.viewer" = [
     "static/*",
 ]
 

@@ -51,7 +51,7 @@ from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTransco
 from transformer_lens import HookedTransformer
 from transformer_lens.hook_points import HookPoint
 
-from biology_server.tl_forward import ensure_replacement_mlp_hooks
+from llm_biology.model.tl_forward import ensure_replacement_mlp_hooks
 
 __all__ = [
     "DirectContribResult",

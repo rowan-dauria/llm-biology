@@ -34,15 +34,15 @@ from circuit_tracer.transcoder.single_layer_transcoder import (  # noqa: E402
 from transformer_lens import HookedTransformer  # noqa: E402
 from transformer_lens.hook_points import HookPoint  # noqa: E402
 
-from biology_server.attribution import (  # noqa: E402
+from llm_biology.attribution.attribution import (  # noqa: E402
     DEFAULT_LAYERS,
     MODEL_ID,
     load_transcoders,
     parse_layers,
     pick_device_dtype,
 )
-from biology_server.tl_forward import ensure_replacement_mlp_hooks  # noqa: E402
-from biology_server.tl_model import load_replacement_model  # noqa: E402
+from llm_biology.model.tl_forward import ensure_replacement_mlp_hooks  # noqa: E402
+from llm_biology.model.tl_model import load_replacement_model  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Fidelity hooks — genuine MLP substitution (not the attribution ghost-skip).

@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from feature_lookup.labels import FeatureLabel, FeatureLabelMap
-from feature_lookup.patch_graph_labels import (
+from llm_biology.features.labels import FeatureLabel, FeatureLabelMap
+from llm_biology.features.patch_graph_labels import (
     DEFAULT_SCAN_DIR,
     _cantor_pair,
     patch_graph,

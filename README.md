@@ -72,7 +72,7 @@ The server is viz-only: it serves existing graph JSONs, lets you upload an
 exported graph, and saves frontend `qParams`. It does not run model inference.
 
 ```bash
-python -m biology_server \
+python -m llm_biology.viewer \
   --port 8041 \
   --graph-file-dir ../data/llm-biology/ui_graphs
 ```

@@ -236,7 +236,7 @@ def prompt_format_from_args(raw: str, metadata: dict[str, Any]) -> str:
 def tokenize_prompt(
     tokenizer: Any, prompt: str, *, prompt_format: str, device: Any
 ) -> tuple[Any, list[str]]:
-    from biology_server.attribution import prepend_special_prefix
+    from llm_biology.attribution.attribution import prepend_special_prefix
 
     text = prompt
     if prompt_format == "chat":
@@ -273,9 +273,9 @@ def measure_model(
     import torch
     from transformers import AutoTokenizer
 
-    from biology_server.attribution import CACHE_DIR, load_transcoders, pick_device_dtype
-    from biology_server.tl_intervention import run_feature_intervention
-    from biology_server.tl_model import load_replacement_model
+    from llm_biology.attribution.attribution import CACHE_DIR, load_transcoders, pick_device_dtype
+    from llm_biology.interventions.tl_intervention import run_feature_intervention
+    from llm_biology.model.tl_model import load_replacement_model
 
     start = time.time()
     device, dtype = pick_device_dtype()
@@ -408,7 +408,7 @@ def finite_ratio(num: float | None, den: float | None) -> float | None:
 
 
 def default_output_base(*, output_dir: Path, direction: str, comparison_model_id: str) -> Path:
-    from biology_server.attribution import slugify
+    from llm_biology.attribution.attribution import slugify
 
     stamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     direction_slug = slugify(direction or "feature-panel")
@@ -529,7 +529,7 @@ def main() -> None:
     setup_logging()
     args = parse_args()
 
-    from biology_server.attribution import parse_layers
+    from llm_biology.attribution.attribution import parse_layers
 
     panel_path = args.feature_panel.expanduser().resolve()
     metadata, panel_rows = read_panel(

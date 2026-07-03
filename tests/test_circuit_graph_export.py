@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from biology_server.circuit_graph_export import (
+from llm_biology.attribution.circuit_graph_export import (
     ErrorNode,
     FeatureNode,
     GraphLink,

@@ -39,7 +39,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import biology_server.intervention_utils as sweep  # noqa: E402
+import llm_biology.interventions.common as sweep  # noqa: E402
 
 LOGGER = logging.getLogger("steerable_ceiling")
 
@@ -84,7 +84,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def default_output_path(graph_path: Path, supernode_name: str) -> Path:
-    from biology_server.attribution import slugify
+    from llm_biology.attribution.attribution import slugify
 
     stamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     name = slugify(supernode_name)
@@ -97,18 +97,18 @@ def main() -> None:
 
     from transformers import AutoTokenizer
 
-    from biology_server.attribution import (
+    from llm_biology.attribution.attribution import (
         CACHE_DIR,
         load_transcoders,
         pick_device_dtype,
         prepend_special_prefix,
     )
-    from biology_server.tl_intervention import (
+    from llm_biology.interventions.tl_intervention import (
         FeatureIntervention,
         compute_direct_logit_contributions,
         run_feature_intervention,
     )
-    from biology_server.tl_model import load_replacement_model
+    from llm_biology.model.tl_model import load_replacement_model
 
     graph_path = args.graph_json.expanduser().resolve()
     graph = sweep.load_graph(graph_path)

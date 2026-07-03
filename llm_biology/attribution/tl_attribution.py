@@ -26,7 +26,7 @@ import torch
 from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTranscoder
 from transformer_lens import HookedTransformer
 
-from biology_server.tl_forward import (
+from llm_biology.model.tl_forward import (
     ActiveFeature,
     HookState,
     finalize_active_features,

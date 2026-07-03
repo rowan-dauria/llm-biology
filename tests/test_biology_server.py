@@ -10,8 +10,8 @@ from typing import Any
 
 import torch
 
-import biology_server.server as server_module
-from biology_server.attribution import (
+import llm_biology.viewer.server as server_module
+from llm_biology.attribution.attribution import (
     ActiveFeature,
     GraphLink,
     LogitTarget,
@@ -25,13 +25,13 @@ from biology_server.attribution import (
     row_links,
     select_logit_targets,
 )
-from biology_server.circuit_graph_export import (
+from llm_biology.attribution.circuit_graph_export import (
     ErrorNode,
     embedding_node_id,
     error_node_id,
     logit_node_id,
 )
-from biology_server.server import serve
+from llm_biology.viewer.server import serve
 
 
 class TinyTokenizer:

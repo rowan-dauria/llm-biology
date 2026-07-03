@@ -23,7 +23,7 @@ from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTransco
 from huggingface_hub import snapshot_download
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
-from biology_server.circuit_graph_export import (
+from llm_biology.attribution.circuit_graph_export import (
     ErrorNode,
     FeatureNode,
     GraphLink,
@@ -36,14 +36,14 @@ from biology_server.circuit_graph_export import (
     make_feature_example_payload,
     paired_feature_index,
 )
-from biology_server.compat import load_transcoder
-from biology_server.memory_profile import (
+from llm_biology.compat import load_transcoder
+from llm_biology.features.labels import FeatureLabelMap, get_feature_label, load_feature_labels
+from llm_biology.features.windows import active_prompt_ids, collect_prompt_texts, get_windows
+from llm_biology.memory_profile import (
     memory_checkpoint,
     memory_profile_call,
     memory_scope,
 )
-from feature_lookup.labels import FeatureLabelMap, get_feature_label, load_feature_labels
-from feature_lookup.windows import active_prompt_ids, collect_prompt_texts, get_windows
 
 MODEL_ID = "Qwen/Qwen3-4B"
 TRANSCODER_REPO = "mwhanna/qwen3-4b-transcoders"
@@ -61,7 +61,7 @@ DEFAULT_BATCH_SIZE = 128
 DEFAULT_UPDATE_INTERVAL = 1
 
 CACHE_DIR = os.getenv("HF_HOME")
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_GRAPH_DIR = PROJECT_ROOT / "data" / "ui_graphs"
 DEFAULT_PT_DIR = PROJECT_ROOT / "data" / "attribution_graphs"
 DEFAULT_TOPK_DIR = PROJECT_ROOT / "data" / "feature_topk" / "150k-pile"
@@ -1029,7 +1029,7 @@ class BiologyAttributionRunner:
         memory_checkpoint("ensure_loaded:after device dtype")
 
         if self._model is None:
-            from biology_server.tl_model import load_replacement_model
+            from llm_biology.model.tl_model import load_replacement_model
 
             tokenizer = self._ensure_tokenizer()
             with timed("Loading model"):
@@ -1134,7 +1134,7 @@ class BiologyAttributionRunner:
                 tokenizer, prompt, use_chat_template=use_chat_template
             )
 
-            from biology_server.tl_attribution import (
+            from llm_biology.attribution.tl_attribution import (
                 TargetSpec,
                 detached_logits,
                 run_attribution_from_context,

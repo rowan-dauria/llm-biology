@@ -61,7 +61,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from biology_server.intervention_utils import (  # noqa: E402
+from llm_biology.interventions.common import (  # noqa: E402
     find_supernode,
     graph_nodes_by_id,
     is_graph_feature_node,
@@ -113,7 +113,7 @@ def capture_clean_features(
     """
     import torch
 
-    from biology_server.tl_forward import ensure_replacement_mlp_hooks
+    from llm_biology.model.tl_forward import ensure_replacement_mlp_hooks
 
     ensure_replacement_mlp_hooks(model, layers)
     captured: dict[int, Any] = {}
@@ -424,7 +424,7 @@ def run_one_sweep_writes(
     """
     import torch
 
-    from biology_server.tl_intervention import run_feature_intervention
+    from llm_biology.interventions.tl_intervention import run_feature_intervention
 
     rows: list[dict[str, float]] = []
     resolved_token_id: int | None = target_token_id
@@ -477,7 +477,7 @@ def run_one_sweep(
     target_pos: int,
 ) -> tuple[list[dict[str, float]], int, float]:
     """Sweep one feature set over magnitudes; return per-magnitude target stats."""
-    from biology_server.tl_intervention import (
+    from llm_biology.interventions.tl_intervention import (
         FeatureIntervention,
         run_feature_intervention,
     )
@@ -546,7 +546,7 @@ def aggregate(targeted_value: float, samples: list[float]) -> dict[str, Any]:
 
 
 def default_output_path(graph_path: Path, supernode_name: str, tag: str | None = None) -> Path:
-    from biology_server.attribution import slugify
+    from llm_biology.attribution.attribution import slugify
 
     stamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     name = slugify(supernode_name)
@@ -631,13 +631,13 @@ def main() -> None:
 
     from transformers import AutoTokenizer
 
-    from biology_server.attribution import (
+    from llm_biology.attribution.attribution import (
         CACHE_DIR,
         load_transcoders,
         pick_device_dtype,
         prepend_special_prefix,
     )
-    from biology_server.tl_model import load_replacement_model
+    from llm_biology.model.tl_model import load_replacement_model
 
     graph_path = args.graph_json.expanduser().resolve()
     graph = load_graph(graph_path)

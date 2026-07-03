@@ -1,7 +1,7 @@
 """Load Qwen3 (or any HF model TL supports) as a linearised ``HookedTransformer``.
 
 Wraps ``HookedTransformer.from_pretrained`` with the freeze settings the
-biology_server attribution backend needs: ``fold_ln=False``,
+llm_biology attribution backend needs: ``fold_ln=False``,
 ``center_writing_weights=False``, ``center_unembed=False`` so unembed-vector
 injection and residual stream line up with the transcoders expect. Then
 applies :func:`install_freezes` so backward is linear.
@@ -15,8 +15,8 @@ import torch
 from transformer_lens import HookedTransformer
 from transformers import AutoModelForCausalLM
 
-from biology_server.memory_profile import memory_checkpoint, memory_profile_call
-from biology_server.tl_freeze import install_freezes
+from llm_biology.memory_profile import memory_checkpoint, memory_profile_call
+from llm_biology.model.tl_freeze import install_freezes
 
 
 def load_replacement_model(

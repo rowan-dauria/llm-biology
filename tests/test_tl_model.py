@@ -13,7 +13,7 @@ import unittest
 
 import torch
 
-from biology_server.tl_model import load_replacement_model
+from llm_biology.model.tl_model import load_replacement_model
 
 DALLAS_PROMPT = "Fact: the capital of the state containing Dallas is"
 EXPECTED_TOKEN = " Austin"

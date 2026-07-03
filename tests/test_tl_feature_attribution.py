@@ -22,13 +22,13 @@ from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTransco
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 from transformer_lens.hook_points import HookPoint
 
-from biology_server.tl_attribution import attribute_feature_row
-from biology_server.tl_forward import (
+from llm_biology.attribution.tl_attribution import attribute_feature_row
+from llm_biology.model.tl_forward import (
     HookState,
     finalize_active_features,
     install_transcoder_hooks,
 )
-from biology_server.tl_freeze import install_freezes
+from llm_biology.model.tl_freeze import install_freezes
 
 
 def _toy_model(seed: int = 0) -> HookedTransformer:

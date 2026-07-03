@@ -66,7 +66,7 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
-    # warn_only until biology_server TL ops are verified deterministic.
+    # warn_only until llm_biology TL ops are verified deterministic.
     torch.use_deterministic_algorithms(True, warn_only=True)
     LOGGER.info("Global seed set to %d", seed)
 
@@ -92,7 +92,7 @@ def log_environment() -> None:
 
 def parse_args() -> argparse.Namespace:
     # Imported lazily so --help works even if heavy deps are missing.
-    from biology_server.attribution import (
+    from llm_biology.attribution.attribution import (
         DEFAULT_EDGE_THRESHOLD,
         DEFAULT_LAYERS,
         DEFAULT_LOGIT_PROB_THRESHOLD,
@@ -195,7 +195,7 @@ def main() -> None:
     use_chat_template = args.chat_template
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 
-    from biology_server.attribution import parse_layers, slugify
+    from llm_biology.attribution.attribution import parse_layers, slugify
 
     slug = args.slug or f"{timestamp}-{slugify(args.prompt[:50])}"
     output_dir = (args.output_root / args.dir_name).resolve()
@@ -216,10 +216,10 @@ def main() -> None:
     set_seed(args.seed)
     log_environment()
 
-    import biology_server
-    import biology_server.attribution as attribution_module
+    import llm_biology
+    import llm_biology.attribution.attribution as attribution_module
 
-    LOGGER.info("TL backend package: %s", biology_server.__file__)
+    LOGGER.info("TL backend package: %s", llm_biology.__file__)
 
     if args.skip_feature_examples:
 

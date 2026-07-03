@@ -6,12 +6,12 @@ import unittest
 from pathlib import Path
 from typing import cast
 
-from feature_lookup.graph_targets import (
+from llm_biology.features.graph_targets import (
     compute_centrality,
     parse_feature_node_id,
     select_unlabeled_targets,
 )
-from feature_lookup.labels import FeatureLabel, FeatureLabelMap
+from llm_biology.features.labels import FeatureLabel, FeatureLabelMap
 
 
 def _make_graph(

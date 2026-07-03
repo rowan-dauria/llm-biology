@@ -7,11 +7,11 @@ __all__ = ["BiologyAttributionRunner", "serve"]
 
 def __getattr__(name: str):
     if name == "BiologyAttributionRunner":
-        from biology_server.attribution import BiologyAttributionRunner
+        from llm_biology.attribution.attribution import BiologyAttributionRunner
 
         return BiologyAttributionRunner
     if name == "serve":
-        from biology_server.server import serve
+        from llm_biology.viewer.server import serve
 
         return serve
     raise AttributeError(name)

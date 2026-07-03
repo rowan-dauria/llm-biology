@@ -36,7 +36,7 @@ except ImportError:
     )
 
 DEFAULT_SCAN_DIR = "qwen3-4b-transcoders"
-DEFAULT_GRAPH_DIR = Path(__file__).parent.parent / "data" / "ui_graphs"
+DEFAULT_GRAPH_DIR = Path(__file__).resolve().parents[2] / "data" / "ui_graphs"
 
 
 def _cantor_pair(x: int, y: int) -> int:

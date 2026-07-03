@@ -2,7 +2,7 @@
 
 Uses TransformerLens ``HookPoint``\\ s to expose the MLP input/output,
 embedding, and final-hidden states needed by the custom attribution code. The
-freezes (:func:`biology_server.tl_freeze.install_freezes`) must already be
+freezes (:func:`llm_biology.model.tl_freeze.install_freezes`) must already be
 installed on the model before these hooks fire.
 
 Public surface:
@@ -25,7 +25,7 @@ from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTransco
 from transformer_lens import HookedTransformer
 from transformer_lens.hook_points import HookPoint
 
-from biology_server.attribution import ActiveFeature, LayerFeatureData, layer_feature_data
+from llm_biology.attribution.attribution import ActiveFeature, LayerFeatureData, layer_feature_data
 
 FwdHook = tuple[str, Callable[[torch.Tensor, HookPoint], torch.Tensor]]
 DEFAULT_ZERO_POSITIONS = slice(0, 1)
