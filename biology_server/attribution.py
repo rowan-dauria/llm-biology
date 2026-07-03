@@ -20,9 +20,6 @@ from typing import Any
 
 import torch
 from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTranscoder
-from circuit_tracer.transcoder.single_layer_transcoder import (
-    load_transcoder,
-)
 from huggingface_hub import snapshot_download
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
@@ -39,6 +36,7 @@ from biology_server.circuit_graph_export import (
     make_feature_example_payload,
     paired_feature_index,
 )
+from biology_server.compat import load_transcoder
 from biology_server.memory_profile import (
     memory_checkpoint,
     memory_profile_call,

@@ -39,7 +39,6 @@ from __future__ import annotations
 import argparse
 import csv
 import gc
-import importlib
 import json
 import logging
 import math
@@ -83,19 +82,6 @@ class ModelMeasurement:
     tokens_by_prompt_id: dict[str, list[str]]
     prompt_lengths: dict[str, int]
     elapsed_seconds: float
-
-
-def _apply_circuit_tracer_shim() -> None:
-    """Alias older circuit-tracer factory names before project imports."""
-
-    slt = importlib.import_module("circuit_tracer.transcoder.single_layer_transcoder")
-    if not hasattr(slt, "load_transcoder"):
-        if not hasattr(slt, "load_relu_transcoder"):
-            raise ImportError(
-                "circuit_tracer.transcoder.single_layer_transcoder has neither "
-                "load_transcoder nor load_relu_transcoder"
-            )
-        slt.load_transcoder = slt.load_relu_transcoder  # type: ignore[attr-defined]
 
 
 def setup_logging() -> None:
@@ -542,7 +528,6 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     setup_logging()
     args = parse_args()
-    _apply_circuit_tracer_shim()
 
     from biology_server.attribution import parse_layers
 

@@ -35,13 +35,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-SCRIPTS_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPTS_DIR.parents[1]
-for _p in (str(PROJECT_ROOT), str(SCRIPTS_DIR)):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-import sweep_supernode_interventions as sweep  # noqa: E402
+import biology_server.intervention_utils as sweep  # noqa: E402
 
 LOGGER = logging.getLogger("steerable_ceiling")
 
@@ -96,7 +94,6 @@ def default_output_path(graph_path: Path, supernode_name: str) -> Path:
 def main() -> None:
     sweep.setup_logging()
     args = parse_args()
-    sweep._apply_circuit_tracer_shim()
 
     from transformers import AutoTokenizer
 

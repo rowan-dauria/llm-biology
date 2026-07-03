@@ -57,14 +57,11 @@ from typing import Any
 
 import numpy as np
 
-SCRIPTS_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPTS_DIR.parents[1]
-for _p in (str(PROJECT_ROOT), str(SCRIPTS_DIR)):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-from sweep_supernode_interventions import (  # noqa: E402
-    _apply_circuit_tracer_shim,
+from biology_server.intervention_utils import (  # noqa: E402
     find_supernode,
     graph_nodes_by_id,
     is_graph_feature_node,
@@ -631,7 +628,6 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     setup_logging()
     args = parse_args()
-    _apply_circuit_tracer_shim()
 
     from transformers import AutoTokenizer
 

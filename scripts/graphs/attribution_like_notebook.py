@@ -17,7 +17,6 @@ and to ``<output-dir>/<slug>.run.log``.
 from __future__ import annotations
 
 import argparse
-import importlib
 import logging
 import os
 import platform
@@ -39,27 +38,6 @@ DEFAULT_DIR_NAME = "csd3_attribution_graphs"
 DEFAULT_PROMPT = "Fact: the capital of the state containing Dallas is"
 
 LOGGER = logging.getLogger("attribution_like_notebook")
-
-
-def _apply_circuit_tracer_shim() -> None:
-    """Keep compatibility with both circuit-tracer factory names.
-
-    The installed v0.4.1 exposes ``load_transcoder``; older builds only expose
-    ``load_relu_transcoder``. ``biology_server.attribution`` imports the former,
-    so alias it defensively before that import happens.
-    """
-
-    slt = importlib.import_module("circuit_tracer.transcoder.single_layer_transcoder")
-    if not hasattr(slt, "load_transcoder"):
-        if not hasattr(slt, "load_relu_transcoder"):
-            raise ImportError(
-                "circuit_tracer.transcoder.single_layer_transcoder has neither "
-                "load_transcoder nor load_relu_transcoder"
-            )
-        slt.load_transcoder = slt.load_relu_transcoder  # type: ignore[attr-defined]
-        LOGGER.debug("Added load_transcoder alias for circuit-tracer runtime.")
-    else:
-        LOGGER.debug("circuit-tracer already exposes load_transcoder.")
 
 
 def setup_logging(log_file: Path, *, level: int = logging.DEBUG) -> None:
@@ -235,7 +213,6 @@ def main() -> None:
     LOGGER.info("use_chat_template=%s", use_chat_template)
     LOGGER.info("=" * 70)
 
-    _apply_circuit_tracer_shim()
     set_seed(args.seed)
     log_environment()
 

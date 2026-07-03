@@ -4,6 +4,7 @@ import http.client
 import json
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -297,8 +298,10 @@ class BiologyServerTests(unittest.TestCase):
             pad_token_id = None
             eos_token_id = None
 
-        with self.assertWarns(UserWarning):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", UserWarning)
             out = prepend_special_prefix(_Tok(), torch.tensor([[5, 6]]))
+        self.assertTrue(any(issubclass(item.category, UserWarning) for item in caught))
         self.assertEqual(out.tolist(), [[5, 6]])
 
     def test_edge_pruning_uses_target_score_and_preserves_signed_weights(self) -> None:
