@@ -38,33 +38,27 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
-from matplotlib.lines import Line2D  # noqa: E402
+from matplotlib.cm import ScalarMappable  # noqa: E402
+from matplotlib.colors import LinearSegmentedColormap, Normalize  # noqa: E402
 
 LAYERS = [2, 12, 24, 33]
 REGION_LAYERS = {24, 33}
 REGION_POSITIONS = {11, 18}
 DEGRADED_OUTCOMES = {"absent", "reduced"}
-
-OUTCOME_STYLES = {
-    "shared_active": {
-        "label": "shared active",
-        "face": "#dff1df",
-        "edge": "#2c6b38",
-        "dot": "#2c6b38",
-    },
-    "reduced": {
-        "label": "reduced",
-        "face": "#fde7b6",
-        "edge": "#b85e00",
-        "dot": "#b85e00",
-    },
-    "absent": {
-        "label": "absent",
-        "face": "#f9d6d5",
-        "edge": "#a53232",
-        "dot": "#a53232",
-    },
-}
+RATIO_MIN = 0.0
+RATIO_MAX = 2.0
+RATIO_CMAP = LinearSegmentedColormap.from_list(
+    "feature_activation_ratio",
+    [
+        (0.00, "#6f1d1b"),  # absent
+        (0.25, "#d18600"),  # halved
+        (0.50, "#2c6b38"),  # unchanged
+        (1.00, "#2b6cb0"),  # stronger
+    ],
+)
+RATIO_NORM = Normalize(vmin=RATIO_MIN, vmax=RATIO_MAX)
+DOT_SIZE_MIN = 16.0
+DOT_SIZE_MAX = 42.0
 
 CALLOUT_KEYWORDS = {
     "base_to_jailbroken": [
@@ -120,6 +114,20 @@ class Feature:
         if self.source_influence is not None and self.source_influence > 0:
             return self.source_influence
         return abs(self.source_activation)
+
+    @property
+    def activation_ratio(self) -> float:
+        if self.source_activation == 0:
+            return 0.0 if self.comparison_activation == 0 else RATIO_MAX
+        return abs(self.comparison_activation) / abs(self.source_activation)
+
+    @property
+    def clipped_activation_ratio(self) -> float:
+        return min(max(self.activation_ratio, RATIO_MIN), RATIO_MAX)
+
+    @property
+    def colour(self) -> tuple[float, float, float, float]:
+        return RATIO_CMAP(RATIO_NORM(self.clipped_activation_ratio))
 
 
 def escape_token(token: str) -> str:
@@ -208,14 +216,14 @@ def grouped_by_cell(features: list[Feature]) -> dict[tuple[int, int], list[Featu
 def dot_sizes(features: list[Feature]) -> dict[str, float]:
     metrics = sorted(feature.size_metric for feature in features if feature.size_metric > 0)
     if not metrics:
-        return {feature.node_id: 16.0 for feature in features}
-    hi = metrics[min(len(metrics) - 1, int(0.95 * (len(metrics) - 1)))]
+        return {feature.node_id: DOT_SIZE_MIN for feature in features}
+    hi = metrics[-1]
     lo = metrics[0]
     span = max(hi - lo, 1e-9)
     sizes: dict[str, float] = {}
     for feature in features:
         scaled = min(max((feature.size_metric - lo) / span, 0.0), 1.0)
-        sizes[feature.node_id] = 8.0 + 58.0 * math.sqrt(scaled)
+        sizes[feature.node_id] = DOT_SIZE_MIN + (DOT_SIZE_MAX - DOT_SIZE_MIN) * scaled
     return sizes
 
 
@@ -302,13 +310,12 @@ def scatter_panel(
             top=y_edges[row + 1],
         )
         for feature, (x, y) in zip(cell_features, points, strict=True):
-            style = OUTCOME_STYLES[feature.outcome]
             ax.scatter(
                 x,
                 y,
                 s=sizes[feature.node_id],
                 marker="o",
-                facecolor=style["dot"],
+                facecolor=feature.colour,
                 edgecolor="white",
                 linewidth=0.35,
                 alpha=0.86,
@@ -388,7 +395,7 @@ def add_callouts(
 
     for feature, y_text in zip(callouts, y_slots, strict=False):
         x, y = locations[feature.node_id]
-        style = OUTCOME_STYLES[feature.outcome]
+        colour = feature.colour
         ax.annotate(
             wrapped_callout(feature.callout_label),
             xy=(x, y),
@@ -399,7 +406,7 @@ def add_callouts(
             color="0.18",
             arrowprops={
                 "arrowstyle": "-",
-                "color": style["edge"],
+                "color": colour,
                 "lw": 0.7,
                 "connectionstyle": f"arc3,rad={rad}",
                 "shrinkA": 1,
@@ -408,7 +415,7 @@ def add_callouts(
             bbox={
                 "boxstyle": "round,pad=0.16,rounding_size=0.08",
                 "facecolor": "white",
-                "edgecolor": style["edge"],
+                "edgecolor": colour,
                 "linewidth": 0.55,
                 "alpha": 0.92,
             },
@@ -431,7 +438,7 @@ def build_figure(
     positions = sorted({feature.pos for features in feature_sets for feature in features})
     tokens = position_tokens(feature_sets)
 
-    fig, axes = plt.subplots(2, 1, figsize=(7.0, 7.8), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(7.3, 8.0), sharex=True)
     for index, (ax, features) in enumerate(zip(axes, feature_sets, strict=True)):
         locations = scatter_panel(
             ax,
@@ -448,34 +455,24 @@ def build_figure(
         )
         ax.tick_params(axis="x", labelbottom=True, pad=2)
 
-    axes[-1].set_xlabel("Prompt token text", fontsize=8, labelpad=8)
-
-    handles = [
-        Line2D(
-            [0],
-            [0],
-            marker="o",
-            linestyle="",
-            markerfacecolor=style["dot"],
-            markeredgecolor="white",
-            markeredgewidth=0.5,
-            markersize=6.2,
-            label=style["label"],
-        )
-        for style in OUTCOME_STYLES.values()
-    ]
-    fig.legend(
-        handles=handles,
-        loc="upper center",
-        ncol=3,
-        frameon=False,
-        bbox_to_anchor=(0.5, 0.995),
-        fontsize=8,
-        handletextpad=0.35,
-        columnspacing=1.0,
+    colourbar = fig.colorbar(
+        ScalarMappable(norm=RATIO_NORM, cmap=RATIO_CMAP),
+        ax=axes,
+        orientation="vertical",
+        fraction=0.03,
+        pad=0.12,
+        aspect=28,
+    )
+    colourbar.set_ticks([0, 0.5, 1, 2])
+    colourbar.set_ticklabels(["0\nabsent", "0.5\nhalved", "1\nunchanged", "2+\nstronger"])
+    colourbar.ax.tick_params(labelsize=7, length=2)
+    colourbar.ax.set_title(
+        "|comparison|\n/ |source|",
+        fontsize=7,
+        pad=6,
     )
     fig.text(0.03, 0.53, "Layer", rotation=90, ha="center", va="center", fontsize=8)
-    fig.subplots_adjust(top=0.94, bottom=0.115, left=0.125, right=0.875, hspace=0.34)
+    fig.subplots_adjust(top=0.96, bottom=0.105, left=0.125, right=0.76, hspace=0.34)
     return fig
 
 
