@@ -52,10 +52,9 @@ RATIO_MAX = 2.0
 RATIO_CMAP = LinearSegmentedColormap.from_list(
     "feature_activation_ratio",
     [
-        (0.00, "#4b0012"),  # absent
-        (0.25, "#f59e00"),  # halved
-        (0.50, "#007a3d"),  # unchanged
-        (1.00, "#0052ff"),  # stronger
+        (0.00, "#b2182b"),  # absent
+        (0.50, "#f2eadf"),  # unchanged
+        (1.00, "#2166ac"),  # stronger
     ],
 )
 RATIO_NORM = Normalize(vmin=RATIO_MIN, vmax=RATIO_MAX)
@@ -70,10 +69,15 @@ CALLOUT_KEYWORDS = {
     ],
     "jailbroken_to_base": [
         ({"shared_active"}, ("bomb", "explosive")),
+        ({"shared_active"}, ("harmful content refusal",)),
         ({"absent", "reduced"}, ("certainly", "sure")),
         ({"absent", "reduced"}, ("answer",)),
         ({"absent", "reduced"}, ("craft project", "instruction")),
     ],
+}
+
+CALLOUT_LABEL_OVERRIDES = {
+    ("jailbroken_to_base", "24_91636_18"): "Harmful Content Refusal",
 }
 
 PINNED_PANEL_NAMES = {
@@ -329,7 +333,8 @@ def scatter_panel(
         rotation_mode="anchor",
         linespacing=0.95,
     )
-    ax.tick_params(axis="both", length=0)
+    ax.tick_params(axis="x", length=0)
+    ax.tick_params(axis="y", length=0, pad=0)
     ax.set_title(title, loc="left", fontsize=9.2, fontweight="bold", pad=5)
 
     for spine in ax.spines.values():
@@ -355,9 +360,9 @@ def scatter_panel(
                 s=sizes[feature.node_id],
                 marker="o",
                 facecolor=feature.colour,
-                edgecolor="white",
-                linewidth=0.18,
-                alpha=0.90,
+                edgecolor="0.55",
+                linewidth=0.12,
+                alpha=0.95,
                 zorder=3 if feature.is_degraded else 2,
             )
             locations[feature.node_id] = (x, y)
@@ -375,7 +380,7 @@ def choose_callouts(features: list[Feature]) -> list[Feature]:
             for feature in features
             if feature.outcome in outcomes
             and feature.node_id not in used_ids
-            and any(keyword in feature.callout_label.lower() for keyword in keywords)
+            and any(keyword in display_callout_label(feature).lower() for keyword in keywords)
         ]
         if not candidates:
             continue
@@ -412,6 +417,16 @@ def wrapped_callout(label: str) -> str:
     return "\n".join(textwrap.wrap(label, width=18, break_long_words=False)) or "(unlabelled)"
 
 
+def display_callout_label(feature: Feature) -> str:
+    return CALLOUT_LABEL_OVERRIDES.get((feature.direction, feature.node_id), feature.callout_label)
+
+
+def callout_colour(feature: Feature) -> Any:
+    if 0.8 <= feature.clipped_activation_ratio <= 1.2:
+        return "0.42"
+    return feature.colour
+
+
 def add_callouts(
     ax: plt.Axes,
     *,
@@ -423,7 +438,10 @@ def add_callouts(
     if not callouts:
         return
     y_top = layer_edges()[-1]
-    y_slots = [0.94 * y_top, 0.78 * y_top, 0.62 * y_top, 0.46 * y_top, 0.30 * y_top]
+    if side == "right" and len(callouts) >= 5:
+        y_slots = [0.94 * y_top, 0.76 * y_top, 0.53 * y_top, 0.39 * y_top, 0.25 * y_top]
+    else:
+        y_slots = [0.94 * y_top, 0.78 * y_top, 0.62 * y_top, 0.46 * y_top, 0.30 * y_top]
     if side == "left":
         x_text = -0.42
         ha = "right"
@@ -435,9 +453,9 @@ def add_callouts(
 
     for feature, y_text in zip(callouts, y_slots, strict=False):
         x, y = locations[feature.node_id]
-        colour = feature.colour
+        colour = callout_colour(feature)
         ax.annotate(
-            wrapped_callout(feature.callout_label),
+            wrapped_callout(display_callout_label(feature)),
             xy=(x, y),
             xytext=(x_text, y_text),
             ha=ha,
@@ -512,7 +530,6 @@ def build_figure(
         fontsize=7,
         pad=6,
     )
-    fig.text(0.03, 0.53, "Layer", rotation=90, ha="center", va="center", fontsize=8)
     return fig
 
 
