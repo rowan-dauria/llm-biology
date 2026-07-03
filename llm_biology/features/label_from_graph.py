@@ -12,18 +12,14 @@ The torch-heavy labelling import is deferred until after argparse so that
 from __future__ import annotations
 
 import argparse
-import sys
 from collections import defaultdict
 from pathlib import Path
 
+from llm_biology.features.graph_targets import GraphTarget, select_unlabeled_targets
+from llm_biology.features.labels import load_feature_labels
+from llm_biology.features.patch_graph_labels import DEFAULT_SCAN_DIR, patch_graph
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from llm_biology.features.graph_targets import GraphTarget, select_unlabeled_targets  # noqa: E402
-from llm_biology.features.labels import load_feature_labels  # noqa: E402
-from llm_biology.features.patch_graph_labels import DEFAULT_SCAN_DIR, patch_graph  # noqa: E402
-
 DEFAULT_GRAPH_DIR = PROJECT_ROOT / "data" / "ui_graphs"
 DEFAULT_TOPK_DIR = PROJECT_ROOT / "data" / "feature_topk" / "150k-pile"
 DEFAULT_ALPHA = 0.5

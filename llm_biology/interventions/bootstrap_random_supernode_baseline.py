@@ -1,6 +1,6 @@
 """Random size-matched baseline for a supernode intervention sweep.
 
-Companion to ``sweep_supernode_interventions.py``. That script steers the
+Companion to ``llm_biology.interventions.sweep``. That script steers the
 *real* constituents of a named supernode across magnitudes; this one asks
 whether the observed effect is special by comparing it to ``N`` random
 size-matched feature sets drawn from the same population.
@@ -49,7 +49,6 @@ import argparse
 import json
 import logging
 import math
-import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -57,11 +56,7 @@ from typing import Any
 
 import numpy as np
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from llm_biology.interventions.common import (  # noqa: E402
+from llm_biology.interventions.common import (
     find_supernode,
     graph_nodes_by_id,
     is_graph_feature_node,

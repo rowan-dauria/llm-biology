@@ -11,7 +11,7 @@ analysis: layers 24/33 at positions 11/18.
 Example:
 
     llm-biology/venv/bin/python3 \
-        llm-biology/scripts/figures/plot_cross_model_feature_fate_unsupervised.py \
+        python -m llm_biology.figures.plot_cross_model_feature_fate_unsupervised \
         llm-biology/data/base_jailbreak_comparison/2026-07-03__base_to_jailbroken_allnodes__vs-qwen3-4b-heretic-trial114-merged.csv \
         llm-biology/data/base_jailbreak_comparison/2026-07-03__jailbroken_to_base_allnodes__vs-qwen3-4b.csv \
         --output-pdf report/figures/feature_fate_map_unsupervised.pdf \

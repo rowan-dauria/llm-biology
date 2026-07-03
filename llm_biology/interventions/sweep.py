@@ -13,17 +13,12 @@ import argparse
 import json
 import logging
 import math
-import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from llm_biology.interventions.common import (  # noqa: E402
+from llm_biology.interventions.common import (
     find_supernode,
     graph_feature_keys,
     graph_nodes_by_id,

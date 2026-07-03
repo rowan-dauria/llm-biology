@@ -22,27 +22,22 @@ from collections.abc import Callable
 from pathlib import Path
 
 import torch
+from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTranscoder
+from transformer_lens import HookedTransformer
+from transformer_lens.hook_points import HookPoint
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from circuit_tracer.transcoder.single_layer_transcoder import (  # noqa: E402
-    SingleLayerTranscoder,
-)
-from transformer_lens import HookedTransformer  # noqa: E402
-from transformer_lens.hook_points import HookPoint  # noqa: E402
-
-from llm_biology.attribution.attribution import (  # noqa: E402
+from llm_biology.attribution.attribution import (
     DEFAULT_LAYERS,
     MODEL_ID,
     load_transcoders,
     parse_layers,
     pick_device_dtype,
 )
-from llm_biology.model.tl_forward import ensure_replacement_mlp_hooks  # noqa: E402
-from llm_biology.model.tl_model import load_replacement_model  # noqa: E402
+from llm_biology.model.tl_forward import ensure_replacement_mlp_hooks
+from llm_biology.model.tl_model import load_replacement_model
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # ---------------------------------------------------------------------------
 # Fidelity hooks — genuine MLP substitution (not the attribution ghost-skip).

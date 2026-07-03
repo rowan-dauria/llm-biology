@@ -5,10 +5,10 @@ against its random size-matched baseline.
 Inputs are the two JSONs produced for the *same* graph/supernode:
 
 * the ``…__baseline-bootstrap__….json`` from
-  ``scripts/interventions/bootstrap_random_supernode_baseline.py`` (per-draw ``prob_delta``
+  ``llm_biology.interventions.bootstrap_random_supernode_baseline`` (per-draw ``prob_delta``
   samples for the random size-matched null), and
 * the ``…__intervention-sweep__….json`` from
-  ``scripts/interventions/sweep_supernode_interventions.py`` (the targeted curve).
+  ``llm_biology.interventions.sweep`` (the targeted curve).
 
 The y-axis metric is selectable with ``--metric``:
 

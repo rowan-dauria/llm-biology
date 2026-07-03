@@ -5,7 +5,7 @@ This is the non-Colab counterpart of
 TransformerLens-backed attribution path through ``BiologyAttributionRunner``
 and saves the attribution graph JSON (plus an
 optional compact ``.pt`` summary and feature sidecars) under
-``/home/rd761/rds/hpc-work/<dir-name>``.
+``LLM_BIOLOGY_OUTPUT_ROOT/<dir-name>`` or ``./outputs/<dir-name>``.
 
 Unlike the notebook there is no ``git clone`` / Drive mount / dependency install:
 the script lives inside the repo and uses the surrounding modules directly.
@@ -28,12 +28,7 @@ from pathlib import Path
 
 import numpy as np
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-# Default output location requested for CSD3 runs (large-file RDS storage).
-DEFAULT_OUTPUT_ROOT = Path("/home/rd761/rds/hpc-work")
+DEFAULT_OUTPUT_ROOT = Path(os.getenv("LLM_BIOLOGY_OUTPUT_ROOT", "./outputs"))
 DEFAULT_DIR_NAME = "csd3_attribution_graphs"
 DEFAULT_PROMPT = "Fact: the capital of the state containing Dallas is"
 
@@ -135,11 +130,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--logit-prob-threshold", type=float, default=DEFAULT_LOGIT_PROB_THRESHOLD)
     parser.add_argument("--max-logit-nodes", type=int, default=DEFAULT_MAX_LOGIT_NODES)
     parser.add_argument(
-        "--skip-preview-tl-parity-check",
-        action="store_true",
-        help="Deprecated compatibility flag; the HF preview path has been removed.",
-    )
-    parser.add_argument(
         "--topk-dir",
         type=Path,
         default=DEFAULT_TOPK_DIR,
@@ -180,12 +170,6 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument(
-        "--preview-top-k",
-        type=int,
-        default=10,
-        help="Deprecated compatibility option; ignored.",
-    )
     return parser.parse_args()
 
 

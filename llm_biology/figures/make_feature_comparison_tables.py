@@ -10,7 +10,7 @@ values remain generated from the CSV source of truth.
 Command used for the report tables:
 
     llm-biology/venv/bin/python3 \
-        llm-biology/scripts/figures/make_feature_comparison_tables.py \
+        python -m llm_biology.figures.make_feature_comparison_tables \
         llm-biology/data/base_jailbreak_comparison/2026-07-01-20-56-31__base_to_jailbroken__vs-qwen3-4b-heretic-trial114-merged.csv \
         llm-biology/data/base_jailbreak_comparison/2026-07-01-20-57-21__jailbroken_to_base__vs-qwen3-4b.csv \
         --output-dir report/tables

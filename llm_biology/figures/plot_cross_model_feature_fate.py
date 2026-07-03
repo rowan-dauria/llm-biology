@@ -13,7 +13,7 @@ chips remain legible in report-scale PDF output.
 Command used for the report figure:
 
     llm-biology/venv/bin/python3 \
-        llm-biology/scripts/figures/plot_cross_model_feature_fate.py \
+        python -m llm_biology.figures.plot_cross_model_feature_fate \
         llm-biology/data/base_jailbreak_comparison/2026-07-01-20-56-31__base_to_jailbroken__vs-qwen3-4b-heretic-trial114-merged.csv \
         llm-biology/data/base_jailbreak_comparison/2026-07-01-20-57-21__jailbroken_to_base__vs-qwen3-4b.csv \
         --output-pdf report/figures/feature_fate_map.pdf \
