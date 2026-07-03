@@ -26,7 +26,6 @@ import csv
 import json
 import math
 import os
-import random
 import textwrap
 from collections import Counter
 from dataclasses import dataclass
@@ -70,16 +69,21 @@ OUTCOME_STYLES = {
 CALLOUT_KEYWORDS = {
     "base_to_jailbroken": [
         ({"shared_active"}, ("bomb", "explosive")),
+        ({"absent", "reduced"}, ("harmful content refusal",)),
         ({"absent", "reduced"}, ("negation",)),
         ({"absent", "reduced"}, ("ethics", "safety", "illicit")),
-        ({"absent", "reduced"}, ("medical advice", "disclaimer")),
     ],
     "jailbroken_to_base": [
         ({"shared_active"}, ("bomb", "explosive")),
-        ({"absent", "reduced"}, ("instruction", "answer", "beginning")),
-        ({"absent", "reduced"}, ("safety",)),
-        ({"absent", "reduced"}, ("greeting", "confirmation", "initialization")),
+        ({"absent", "reduced"}, ("certainly", "sure")),
+        ({"absent", "reduced"}, ("answer",)),
+        ({"absent", "reduced"}, ("craft project", "instruction")),
     ],
+}
+
+PINNED_PANEL_NAMES = {
+    "base_to_jailbroken": "refusal-bomb-base-to-jailbroken.json",
+    "jailbroken_to_base": "refusal-bomb-jailbroken-to-base.json",
 }
 
 
@@ -97,6 +101,11 @@ class Feature:
     activation_ratio_abs: float
     source_influence: float | None
     comparison_token: str
+    human_label: str | None = None
+
+    @property
+    def callout_label(self) -> str:
+        return self.human_label or self.label
 
     @property
     def is_region(self) -> bool:
@@ -132,10 +141,31 @@ def as_float(raw: str) -> float | None:
     return value if math.isfinite(value) else None
 
 
-def load_features(path: Path) -> list[Feature]:
+def load_human_labels(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    with path.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    features = payload.get("features", []) if isinstance(payload, dict) else []
+    labels: dict[str, str] = {}
+    for feature in features:
+        if isinstance(feature, dict) and feature.get("node_id") and feature.get("label"):
+            labels[str(feature["node_id"])] = str(feature["label"])
+    return labels
+
+
+def default_human_label_path(csv_path: Path, direction: str) -> Path | None:
+    name = PINNED_PANEL_NAMES.get(direction)
+    if name is None:
+        return None
+    return csv_path.parent / "panels" / name
+
+
+def load_features(path: Path, human_labels: dict[str, str] | None = None) -> list[Feature]:
     with path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
 
+    human_labels = human_labels or {}
     features: list[Feature] = []
     for row in rows:
         features.append(
@@ -152,6 +182,7 @@ def load_features(path: Path) -> list[Feature]:
                 activation_ratio_abs=float(row["activation_ratio_abs"]),
                 source_influence=as_float(row.get("source_influence", "")),
                 comparison_token=row["comparison_token"],
+                human_label=human_labels.get(row["node_id"]),
             )
         )
     return features
@@ -195,7 +226,6 @@ def cell_dot_positions(
     right: float,
     bottom: float,
     top: float,
-    seed: int,
 ) -> list[tuple[float, float]]:
     x_margin = 0.12 * (right - left)
     y_margin = 0.18 * (top - bottom)
@@ -204,27 +234,20 @@ def cell_dot_positions(
     inner_bottom = bottom + y_margin
     inner_top = top - y_margin
 
-    if n_features > 12:
-        aspect = max((inner_right - inner_left) / max(inner_top - inner_bottom, 1e-9), 0.5)
-        n_cols = max(2, math.ceil(math.sqrt(n_features * aspect)))
-        n_rows = math.ceil(n_features / n_cols)
-        points: list[tuple[float, float]] = []
-        for idx in range(n_features):
-            row = idx // n_cols
-            col = idx % n_cols
-            x = inner_left + (col + 0.5) * (inner_right - inner_left) / n_cols
-            y = inner_top - (row + 0.5) * (inner_top - inner_bottom) / n_rows
-            points.append((x, y))
-        return points
+    if n_features == 1:
+        return [((left + right) / 2, (bottom + top) / 2)]
 
-    rng = random.Random(seed)
-    return [
-        (
-            rng.uniform(inner_left, inner_right),
-            rng.uniform(inner_bottom, inner_top),
-        )
-        for _ in range(n_features)
-    ]
+    aspect = max((inner_right - inner_left) / max(inner_top - inner_bottom, 1e-9), 0.5)
+    n_cols = max(1, math.ceil(math.sqrt(n_features * aspect)))
+    n_rows = math.ceil(n_features / n_cols)
+    points: list[tuple[float, float]] = []
+    for idx in range(n_features):
+        row = idx // n_cols
+        col = idx % n_cols
+        x = inner_left + (col + 0.5) * (inner_right - inner_left) / n_cols
+        y = inner_top - (row + 0.5) * (inner_top - inner_bottom) / n_rows
+        points.append((x, y))
+    return points
 
 
 def scatter_panel(
@@ -253,7 +276,7 @@ def scatter_panel(
     ax.set_yticklabels([f"L{layer}" for layer in LAYERS], fontsize=8)
     ax.set_xticks([pos_to_index[pos] + 0.5 for pos in positions])
     ax.set_xticklabels(
-        [f"{escape_token(tokens[pos])}\n{pos}" for pos in positions],
+        [escape_token(tokens[pos]) for pos in positions],
         fontsize=6.3,
         rotation=45,
         ha="right",
@@ -277,7 +300,6 @@ def scatter_panel(
             right=x_edges[col + 1],
             bottom=y_edges[row],
             top=y_edges[row + 1],
-            seed=layer * 1000 + pos,
         )
         for feature, (x, y) in zip(cell_features, points, strict=True):
             style = OUTCOME_STYLES[feature.outcome]
@@ -307,7 +329,7 @@ def choose_callouts(features: list[Feature]) -> list[Feature]:
             for feature in features
             if feature.outcome in outcomes
             and feature.node_id not in used_ids
-            and any(keyword in feature.label.lower() for keyword in keywords)
+            and any(keyword in feature.callout_label.lower() for keyword in keywords)
         ]
         if not candidates:
             continue
@@ -368,7 +390,7 @@ def add_callouts(
         x, y = locations[feature.node_id]
         style = OUTCOME_STYLES[feature.outcome]
         ax.annotate(
-            wrapped_callout(feature.label),
+            wrapped_callout(feature.callout_label),
             xy=(x, y),
             xytext=(x_text, y_text),
             ha=ha,
@@ -426,7 +448,7 @@ def build_figure(
         )
         ax.tick_params(axis="x", labelbottom=True, pad=2)
 
-    axes[-1].set_xlabel("Prompt token text and position", fontsize=8, labelpad=8)
+    axes[-1].set_xlabel("Prompt token text", fontsize=8, labelpad=8)
 
     handles = [
         Line2D(
@@ -551,6 +573,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("base_to_jailbroken_csv", type=Path)
     parser.add_argument("jailbroken_to_base_csv", type=Path)
     parser.add_argument(
+        "--base-human-labels",
+        type=Path,
+        default=None,
+        help="Pinned-panel JSON whose labels override base-to-jailbroken callout text.",
+    )
+    parser.add_argument(
+        "--jailbroken-human-labels",
+        type=Path,
+        default=None,
+        help="Pinned-panel JSON whose labels override jailbroken-to-base callout text.",
+    )
+    parser.add_argument(
         "--output-pdf",
         type=Path,
         default=Path("report/figures/feature_fate_map_unsupervised.pdf"),
@@ -571,8 +605,20 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    base_to_jailbroken = load_features(args.base_to_jailbroken_csv)
-    jailbroken_to_base = load_features(args.jailbroken_to_base_csv)
+    base_label_path = args.base_human_labels or default_human_label_path(
+        args.base_to_jailbroken_csv, "base_to_jailbroken"
+    )
+    jailbroken_label_path = args.jailbroken_human_labels or default_human_label_path(
+        args.jailbroken_to_base_csv, "jailbroken_to_base"
+    )
+    base_to_jailbroken = load_features(
+        args.base_to_jailbroken_csv,
+        load_human_labels(base_label_path) if base_label_path is not None else None,
+    )
+    jailbroken_to_base = load_features(
+        args.jailbroken_to_base_csv,
+        load_human_labels(jailbroken_label_path) if jailbroken_label_path is not None else None,
+    )
 
     fig = build_figure(base_to_jailbroken, jailbroken_to_base)
     args.output_pdf.parent.mkdir(parents=True, exist_ok=True)
