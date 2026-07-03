@@ -103,7 +103,8 @@ python scripts/figures/plot_intervention_comparison.py <sweep-a.json> <sweep-b.j
 ## Heretic Refusal Runs
 
 The Heretic changes are kept as a companion fork, not vendored here. See
-`docs/heretic-refusal.md` for the exact branch/commit and reproduction notes.
+`../docs/heretic-refusal.md` for the exact branch/commit, layer audit, and
+reproduction notes.
 The submission repo contains the graph/comparison wrappers:
 
 ```bash
