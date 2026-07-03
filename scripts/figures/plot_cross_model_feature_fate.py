@@ -39,6 +39,36 @@ import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.patches import Patch  # noqa: E402
 
 LAYERS = [2, 12, 24, 33]
+DEFAULT_LAYER_HEIGHTS = {
+    2: 1.00,
+    12: 1.00,
+    24: 1.60,
+    33: 2.05,
+}
+PANEL_LAYER_HEIGHTS = {
+    "base_to_jailbroken": {
+        2: 1.00,
+        12: 1.00,
+        24: 1.60,
+        33: 2.05,
+    },
+    "jailbroken_to_base": {
+        2: 0.40,
+        12: 1.20,
+        24: 1.40,
+        33: 1.60,
+    },
+}
+PANEL_COLUMN_WIDTHS = {
+    "base_to_jailbroken": {
+        # Token position: width in the same data units used for categorical columns.
+        # Omit a position to use the content-derived default from column_widths(...).
+    },
+    "jailbroken_to_base": {
+        # Token position: width in the same data units used for categorical columns.
+        # Omit a position to use the content-derived default from column_widths(...).
+    },
+}
 
 OUTCOME_STYLES = {
     "shared_active": {
@@ -89,23 +119,25 @@ def escape_token(token: str) -> str:
 
 def wrapped_label(label: str, *, pos: int) -> str:
     """Wrap only labels that would otherwise force very wide columns."""
-    width = 20 if pos in {8, 9, 11} else 28
+    width = 18 if pos in {8, 9, 11, 18} else 24
     if len(label) <= width:
         return label
     return "\n".join(textwrap.wrap(label, width=width, break_long_words=False))
 
 
 def chip_text(row: dict[str, str]) -> str:
-    label = wrapped_label(row["label"], pos=int(row["pos"]))
+    pos = int(row["pos"])
+    label = wrapped_label(row["label"], pos=pos)
     outcome = row["outcome"]
     source = float(row["source_activation"])
     comparison = float(row["comparison_activation"])
     ratio = float(row["activation_ratio_abs"])
+    separator = " "
 
     if outcome == "absent":
-        return f"{label} {source:.1f}→0"
+        return f"{label}{separator}{source:.1f}→0"
     if outcome == "reduced":
-        return f"{label} {source:.1f}→{comparison:.1f}"
+        return f"{label}{separator}{source:.1f}→{comparison:.1f}"
     if ratio < 0.85 or ratio > 1.15:
         return f"{label} ×{ratio:.2f}"
     return label
@@ -172,52 +204,60 @@ def draw_panel(
     positions: list[int],
     tokens: dict[int, str],
     widths: dict[int, float],
+    column_width_overrides: dict[int, float],
+    layer_heights: dict[int, float],
     title: str,
 ) -> None:
     edges = [0.0]
     for pos in positions:
-        edges.append(edges[-1] + widths[pos])
+        width = column_width_overrides.get(pos, widths[pos])
+        edges.append(edges[-1] + width)
     centres = [(edges[i] + edges[i + 1]) / 2 for i in range(len(positions))]
+    layer_bounds: dict[int, tuple[float, float]] = {}
+    layer_edges = [0.0]
+    for layer in LAYERS:
+        layer_edges.append(layer_edges[-1] + layer_heights.get(layer, DEFAULT_LAYER_HEIGHTS[layer]))
+        layer_bounds[layer] = (layer_edges[-2], layer_edges[-1])
 
     ax.set_xlim(edges[0], edges[-1])
-    ax.set_ylim(0, len(LAYERS))
+    ax.set_ylim(0, layer_edges[-1])
     ax.set_axisbelow(True)
 
     for edge in edges:
         ax.axvline(edge, color="0.84", lw=0.8, zorder=0)
-    for row in range(len(LAYERS) + 1):
-        ax.axhline(row, color="0.84", lw=0.8, zorder=0)
+    for edge in layer_edges:
+        ax.axhline(edge, color="0.84", lw=0.8, zorder=0)
 
-    ax.set_yticks([idx + 0.5 for idx in range(len(LAYERS))])
-    ax.set_yticklabels([f"L{layer}" for layer in LAYERS], fontsize=10)
-    ax.set_ylabel("Layer", fontsize=10)
+    ax.set_yticks([(bottom + top) / 2 for bottom, top in layer_bounds.values()])
+    ax.set_yticklabels([f"L{layer}" for layer in LAYERS], fontsize=13)
+    ax.set_ylabel("Layer", fontsize=13)
     ax.set_xticks(centres)
     ax.set_xticklabels(
         [f"{escape_token(tokens[pos])}\npos {pos}" for pos in positions],
-        fontsize=9,
+        fontsize=12,
         linespacing=1.05,
     )
     ax.tick_params(axis="both", length=0)
-    ax.set_title(title, loc="left", fontsize=12, fontweight="bold", pad=8)
+    ax.set_title(title, loc="left", fontsize=16, fontweight="bold", pad=10)
 
     for spine in ax.spines.values():
         spine.set_visible(False)
 
     grouped = grouped_by_cell(features)
-    layer_to_row = {layer: idx for idx, layer in enumerate(LAYERS)}
     pos_to_index = {pos: idx for idx, pos in enumerate(positions)}
 
     for (layer, pos), cell_features in grouped.items():
-        row = layer_to_row[layer]
+        bottom, top = layer_bounds[layer]
+        row_height = top - bottom
         col = pos_to_index[pos]
         left, right = edges[col], edges[col + 1]
         x = (left + right) / 2
         n_features = len(cell_features)
-        slot = 0.86 / n_features
-        font_size = 9.3 if n_features < 6 else 9.0
+        slot = 0.92 * row_height / n_features
+        font_size = 12.0 if n_features < 6 else 11.4
 
         for idx, feature in enumerate(cell_features):
-            y = row + 0.93 - (idx + 0.5) * slot
+            y = top - 0.04 * row_height - (idx + 0.5) * slot
             style = OUTCOME_STYLES[feature.outcome]
             ax.text(
                 x,
@@ -227,9 +267,9 @@ def draw_panel(
                 va="center",
                 fontsize=font_size,
                 color=style["text"],
-                linespacing=0.92,
+                linespacing=0.90,
                 bbox={
-                    "boxstyle": "round,pad=0.18,rounding_size=0.12",
+                    "boxstyle": "round,pad=0.20,rounding_size=0.12",
                     "facecolor": style["face"],
                     "edgecolor": style["edge"],
                     "linewidth": 0.9,
@@ -246,24 +286,27 @@ def build_figure(
     tokens = position_tokens(feature_sets)
     widths = column_widths(positions, feature_sets)
 
-    fig, axes = plt.subplots(2, 1, figsize=(11.0, 12.6), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(13.0, 16.8), sharex=True)
     titles = [
         f"A  Base-model features measured in the abliterated model (n={len(base_to_jailbroken)})",
         f"B  Abliterated-model features measured in the base model (n={len(jailbroken_to_base)})",
     ]
+    panel_keys = ["base_to_jailbroken", "jailbroken_to_base"]
 
-    for ax, features, title in zip(axes, feature_sets, titles, strict=True):
+    for ax, features, title, panel_key in zip(axes, feature_sets, titles, panel_keys, strict=True):
         draw_panel(
             ax,
             features=features,
             positions=positions,
             tokens=tokens,
             widths=widths,
+            column_width_overrides=PANEL_COLUMN_WIDTHS[panel_key],
+            layer_heights=PANEL_LAYER_HEIGHTS[panel_key],
             title=title,
         )
         ax.tick_params(axis="x", labelbottom=True, pad=5)
 
-    axes[-1].set_xlabel("Prompt token position, categorically spaced", fontsize=10, labelpad=10)
+    axes[-1].set_xlabel("Prompt token position, categorically spaced", fontsize=13, labelpad=12)
 
     handles = [
         Patch(
@@ -280,9 +323,9 @@ def build_figure(
         ncol=3,
         frameon=False,
         bbox_to_anchor=(0.5, 0.997),
-        fontsize=10,
+        fontsize=13,
     )
-    fig.subplots_adjust(top=0.945, bottom=0.065, left=0.07, right=0.985, hspace=0.28)
+    fig.subplots_adjust(top=0.945, bottom=0.065, left=0.07, right=0.985, hspace=0.30)
     return fig
 
 
