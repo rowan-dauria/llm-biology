@@ -16,6 +16,7 @@ Example:
         llm-biology/data/base_jailbreak_comparison/2026-07-03__jailbroken_to_base_allnodes__vs-qwen3-4b.csv \
         --output-pdf report/figures/feature_fate_map_unsupervised.pdf \
         --output-png report/figures/feature_fate_map_unsupervised.png \
+        --output-svg report/figures/feature_fate_map_unsupervised.svg \
         --summary-output llm-biology/data/base_jailbreak_comparison/allnodes_feature_fate_summary.json
 """
 
@@ -42,6 +43,7 @@ from matplotlib.cm import ScalarMappable  # noqa: E402
 from matplotlib.colors import LinearSegmentedColormap, Normalize  # noqa: E402
 
 LAYERS = [2, 12, 24, 33]
+LAYER_HEIGHTS = {2: 0.52, 12: 0.62, 24: 1.0, 33: 1.0}
 REGION_LAYERS = {24, 33}
 REGION_POSITIONS = {11, 18}
 DEGRADED_OUTCOMES = {"absent", "reduced"}
@@ -50,15 +52,14 @@ RATIO_MAX = 2.0
 RATIO_CMAP = LinearSegmentedColormap.from_list(
     "feature_activation_ratio",
     [
-        (0.00, "#6f1d1b"),  # absent
-        (0.25, "#d18600"),  # halved
-        (0.50, "#2c6b38"),  # unchanged
-        (1.00, "#2b6cb0"),  # stronger
+        (0.00, "#4b0012"),  # absent
+        (0.25, "#f59e00"),  # halved
+        (0.50, "#007a3d"),  # unchanged
+        (1.00, "#0052ff"),  # stronger
     ],
 )
 RATIO_NORM = Normalize(vmin=RATIO_MIN, vmax=RATIO_MAX)
-DOT_SIZE_MIN = 16.0
-DOT_SIZE_MAX = 42.0
+DOT_SIZE = 6.0
 
 CALLOUT_KEYWORDS = {
     "base_to_jailbroken": [
@@ -213,18 +214,37 @@ def grouped_by_cell(features: list[Feature]) -> dict[tuple[int, int], list[Featu
     return grouped
 
 
+def layer_edges() -> list[float]:
+    edges = [0.0]
+    for layer in LAYERS:
+        edges.append(edges[-1] + LAYER_HEIGHTS[layer])
+    return edges
+
+
 def dot_sizes(features: list[Feature]) -> dict[str, float]:
-    metrics = sorted(feature.size_metric for feature in features if feature.size_metric > 0)
-    if not metrics:
-        return {feature.node_id: DOT_SIZE_MIN for feature in features}
-    hi = metrics[-1]
-    lo = metrics[0]
-    span = max(hi - lo, 1e-9)
-    sizes: dict[str, float] = {}
-    for feature in features:
-        scaled = min(max((feature.size_metric - lo) / span, 0.0), 1.0)
-        sizes[feature.node_id] = DOT_SIZE_MIN + (DOT_SIZE_MAX - DOT_SIZE_MIN) * scaled
-    return sizes
+    return {feature.node_id: DOT_SIZE for feature in features}
+
+
+def choose_grid_shape(
+    *,
+    n_features: int,
+    width: float,
+    height: float,
+    x_to_y_display_scale: float,
+) -> tuple[int, int]:
+    best_cols = 1
+    best_rows = n_features
+    best_score = -1.0
+    for n_cols in range(1, n_features + 1):
+        n_rows = math.ceil(n_features / n_cols)
+        x_spacing = (width * x_to_y_display_scale) / n_cols
+        y_spacing = height / n_rows
+        score = min(x_spacing, y_spacing)
+        if score > best_score:
+            best_cols = n_cols
+            best_rows = n_rows
+            best_score = score
+    return best_cols, best_rows
 
 
 def cell_dot_positions(
@@ -234,9 +254,10 @@ def cell_dot_positions(
     right: float,
     bottom: float,
     top: float,
+    x_to_y_display_scale: float,
 ) -> list[tuple[float, float]]:
-    x_margin = 0.12 * (right - left)
-    y_margin = 0.18 * (top - bottom)
+    x_margin = 0.08 * (right - left)
+    y_margin = 0.10 * (top - bottom)
     inner_left = left + x_margin
     inner_right = right - x_margin
     inner_bottom = bottom + y_margin
@@ -245,14 +266,21 @@ def cell_dot_positions(
     if n_features == 1:
         return [((left + right) / 2, (bottom + top) / 2)]
 
-    aspect = max((inner_right - inner_left) / max(inner_top - inner_bottom, 1e-9), 0.5)
-    n_cols = max(1, math.ceil(math.sqrt(n_features * aspect)))
-    n_rows = math.ceil(n_features / n_cols)
+    n_cols, n_rows = choose_grid_shape(
+        n_features=n_features,
+        width=inner_right - inner_left,
+        height=inner_top - inner_bottom,
+        x_to_y_display_scale=x_to_y_display_scale,
+    )
     points: list[tuple[float, float]] = []
     for idx in range(n_features):
         row = idx // n_cols
         col = idx % n_cols
-        x = inner_left + (col + 0.5) * (inner_right - inner_left) / n_cols
+        row_start = row * n_cols
+        row_count = min(n_cols, n_features - row_start)
+        row_width = row_count * (inner_right - inner_left) / n_cols
+        row_left = (inner_left + inner_right - row_width) / 2
+        x = row_left + (col + 0.5) * (inner_right - inner_left) / n_cols
         y = inner_top - (row + 0.5) * (inner_top - inner_bottom) / n_rows
         points.append((x, y))
     return points
@@ -267,20 +295,30 @@ def scatter_panel(
     title: str,
 ) -> dict[str, tuple[float, float]]:
     x_edges = [float(index) for index in range(len(positions) + 1)]
-    y_edges = [float(index) for index in range(len(LAYERS) + 1)]
+    y_edges = layer_edges()
     pos_to_index = {pos: index for index, pos in enumerate(positions)}
     layer_to_index = {layer: index for index, layer in enumerate(LAYERS)}
 
     ax.set_xlim(x_edges[0] - 1.15, x_edges[-1] + 1.15)
     ax.set_ylim(y_edges[0], y_edges[-1])
     ax.set_axisbelow(True)
+    fig_width, fig_height = ax.figure.get_size_inches()
+    bbox = ax.get_position()
+    x_units = ax.get_xlim()[1] - ax.get_xlim()[0]
+    y_units = ax.get_ylim()[1] - ax.get_ylim()[0]
+    x_to_y_display_scale = (fig_width * bbox.width / x_units) / (fig_height * bbox.height / y_units)
 
     for edge in x_edges:
-        ax.axvline(edge, color="0.88", lw=0.55, zorder=0)
+        ax.vlines(edge, y_edges[0], y_edges[-1], color="0.88", lw=0.55, zorder=0)
     for edge in y_edges:
-        ax.axhline(edge, color="0.88", lw=0.55, zorder=0)
+        ax.hlines(edge, x_edges[0], x_edges[-1], color="0.88", lw=0.55, zorder=0)
 
-    ax.set_yticks([layer_to_index[layer] + 0.5 for layer in LAYERS])
+    ax.set_yticks(
+        [
+            (y_edges[layer_to_index[layer]] + y_edges[layer_to_index[layer] + 1]) / 2
+            for layer in LAYERS
+        ]
+    )
     ax.set_yticklabels([f"L{layer}" for layer in LAYERS], fontsize=8)
     ax.set_xticks([pos_to_index[pos] + 0.5 for pos in positions])
     ax.set_xticklabels(
@@ -308,6 +346,7 @@ def scatter_panel(
             right=x_edges[col + 1],
             bottom=y_edges[row],
             top=y_edges[row + 1],
+            x_to_y_display_scale=x_to_y_display_scale,
         )
         for feature, (x, y) in zip(cell_features, points, strict=True):
             ax.scatter(
@@ -317,8 +356,8 @@ def scatter_panel(
                 marker="o",
                 facecolor=feature.colour,
                 edgecolor="white",
-                linewidth=0.35,
-                alpha=0.86,
+                linewidth=0.18,
+                alpha=0.90,
                 zorder=3 if feature.is_degraded else 2,
             )
             locations[feature.node_id] = (x, y)
@@ -370,7 +409,7 @@ def choose_callouts(features: list[Feature]) -> list[Feature]:
 
 
 def wrapped_callout(label: str) -> str:
-    return "\n".join(textwrap.wrap(label, width=22, break_long_words=False)) or "(unlabelled)"
+    return "\n".join(textwrap.wrap(label, width=18, break_long_words=False)) or "(unlabelled)"
 
 
 def add_callouts(
@@ -383,13 +422,14 @@ def add_callouts(
     callouts = [feature for feature in choose_callouts(features) if feature.node_id in locations]
     if not callouts:
         return
-    y_slots = [3.72, 3.18, 2.64, 2.10, 1.56]
+    y_top = layer_edges()[-1]
+    y_slots = [0.94 * y_top, 0.78 * y_top, 0.62 * y_top, 0.46 * y_top, 0.30 * y_top]
     if side == "left":
         x_text = -0.42
         ha = "right"
         rad = -0.12
     else:
-        x_text = len({feature.pos for feature in features}) + 0.42
+        x_text = len({feature.pos for feature in features}) + 0.12
         ha = "left"
         rad = 0.12
 
@@ -425,9 +465,9 @@ def add_callouts(
 
 def direction_title(direction: str, n_features: int) -> str:
     if direction == "base_to_jailbroken":
-        return f"A  Base graph features measured in the abliterated model (n={n_features})"
+        return f"A  Base graph features in the abliterated model (n={n_features})"
     if direction == "jailbroken_to_base":
-        return f"B  Abliterated graph features measured in the base model (n={n_features})"
+        return f"B  Abliterated graph features in the base model (n={n_features})"
     return f"{direction or 'comparison'} (n={n_features})"
 
 
@@ -438,7 +478,8 @@ def build_figure(
     positions = sorted({feature.pos for features in feature_sets for feature in features})
     tokens = position_tokens(feature_sets)
 
-    fig, axes = plt.subplots(2, 1, figsize=(7.3, 8.0), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(7.3, 7.1), sharex=True)
+    fig.subplots_adjust(top=0.955, bottom=0.115, left=0.125, right=0.76, hspace=0.32)
     for index, (ax, features) in enumerate(zip(axes, feature_sets, strict=True)):
         locations = scatter_panel(
             ax,
@@ -460,7 +501,7 @@ def build_figure(
         ax=axes,
         orientation="vertical",
         fraction=0.03,
-        pad=0.12,
+        pad=0.15,
         aspect=28,
     )
     colourbar.set_ticks([0, 0.5, 1, 2])
@@ -472,7 +513,6 @@ def build_figure(
         pad=6,
     )
     fig.text(0.03, 0.53, "Layer", rotation=90, ha="center", va="center", fontsize=8)
-    fig.subplots_adjust(top=0.96, bottom=0.105, left=0.125, right=0.76, hspace=0.34)
     return fig
 
 
@@ -592,6 +632,12 @@ def parse_args() -> argparse.Namespace:
         default=Path("report/figures/feature_fate_map_unsupervised.png"),
     )
     parser.add_argument(
+        "--output-svg",
+        type=Path,
+        default=None,
+        help="Optional SVG output path. Omit to avoid overwriting an existing editable SVG.",
+    )
+    parser.add_argument(
         "--summary-output",
         type=Path,
         default=None,
@@ -624,6 +670,10 @@ def main() -> None:
     fig.savefig(args.output_png, dpi=300)
     print(f"wrote {args.output_pdf}")
     print(f"wrote {args.output_png}")
+    if args.output_svg is not None:
+        args.output_svg.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(args.output_svg)
+        print(f"wrote {args.output_svg}")
 
     summary = build_summary(base_to_jailbroken, jailbroken_to_base)
     summary_path = args.summary_output
