@@ -80,8 +80,9 @@ by git.
 
 ## Graph Viewer
 
-The server is viz-only: it serves existing graph JSONs, lets you upload an
-exported graph, and saves frontend `qParams`. It does not run model inference.
+The viewer is read-only by default: it serves existing graph JSONs and the
+circuit-tracer frontend, but it does not run model inference or expose graph
+editing in the browser.
 
 ```bash
 python -m llm_biology.viewer \
@@ -91,6 +92,21 @@ python -m llm_biology.viewer \
 
 The viewer expects the circuit-tracer frontend assets in a sibling
 `../circuit-tracer` checkout, or pass `--frontend-dir` explicitly.
+
+For thesis-supplement hosting, export a static bundle and deploy the output
+directory to Cloudflare Pages, GitHub Pages, or another static host:
+
+```bash
+python -m llm_biology.viewer.export_static \
+  --output-dir dist/graph-viewer \
+  --graph-file-dir data/ui_graphs
+```
+
+The static export copies the local viewer shell, circuit-tracer assets, graph
+metadata, graph JSONs, and feature files into a self-contained directory. It has
+no upload/save endpoints; `qParams` changes remain URL-local only. If you need
+the local preview server to import or save graphs during private authoring, pass
+`--allow-writes`.
 
 ## Report Analyses
 
