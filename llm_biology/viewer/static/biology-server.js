@@ -14,6 +14,8 @@
     'clerps',
   ]
 
+  disableEditOnlyCircuitTracerControls()
+
   const graphView = createGraphView(d3.select('.nav'), d3.select('#graph'))
 
   els.graphSelect.addEventListener('change', () => {
@@ -57,6 +59,23 @@
 
   function clearGraphStateParams() {
     graphStateParamKeys.forEach(key => util.params.set(key, null))
+  }
+
+  function disableEditOnlyCircuitTracerControls() {
+    const initButtonContainer = window.initCgButtonContainer
+    if (typeof initButtonContainer !== 'function') return
+
+    window.initCgButtonContainer = function (args) {
+      initButtonContainer(args)
+      if (args?.visState?.isEditMode) return
+
+      args.cgSel
+        .selectAll('.button-container .toggle-buttons')
+        .filter(function () {
+          return d3.select(this).text().trim() === 'Ungroup selected'
+        })
+        .remove()
+    }
   }
 
   // Ported from circuit-tracer's frontend index.html; keep in sync with it.
