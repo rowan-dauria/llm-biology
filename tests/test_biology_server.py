@@ -31,7 +31,6 @@ from llm_biology.attribution.circuit_graph_export import (
     error_node_id,
     logit_node_id,
 )
-from llm_biology.viewer.export_static import export_static_viewer
 from llm_biology.viewer.server import serve
 
 
@@ -373,30 +372,6 @@ class BiologyServerTests(unittest.TestCase):
             self.assertEqual(feature_via_data, {"featureIndex": 1})
             self.assertEqual(feature, {"featureIndex": 1})
 
-    def test_metadata_omits_stale_slugs_and_adds_existing_graph_files(self) -> None:
-        with run_test_server() as client:
-            write_demo_graph(client.graph_dir, slug="kept")
-            extra = upload_graph_payload(slug="extra")
-            extra["metadata"]["prompt"] = "extra prompt"
-            (client.graph_dir / "extra.json").write_text(json.dumps(extra), encoding="utf-8")
-            (client.graph_dir / "graph-metadata.json").write_text(
-                json.dumps(
-                    {
-                        "graphs": [
-                            {"slug": "stale", "prompt": "missing"},
-                            {"slug": "kept", "prompt": "kept prompt"},
-                        ]
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-            metadata = client.get("/data/graph-metadata.json")
-
-            self.assertEqual([entry["slug"] for entry in metadata["graphs"]], ["kept", "extra"])
-            self.assertEqual(metadata["graphs"][0]["prompt"], "kept prompt")
-            self.assertEqual(metadata["graphs"][1]["prompt"], "extra prompt")
-
     def test_page_and_ct_assets_served(self) -> None:
         with run_test_server(ct_assets={"util.js": "window.util = {}"}) as client:
             status, body = client.get_raw("/")
@@ -439,21 +414,8 @@ class BiologyServerTests(unittest.TestCase):
             finally:
                 server_module.PROJECT_ROOT = original_project_root
 
-    def test_save_graph_is_read_only_by_default(self) -> None:
+    def test_save_graph_updates_qparams(self) -> None:
         with run_test_server() as client:
-            write_demo_graph(client.graph_dir, slug="demo")
-
-            response = client.post(
-                "/save_graph/demo",
-                {"qParams": {"clickedId": "changed"}},
-                expected_status=405,
-            )
-            graph = client.get("/graph_data/demo.json")
-            self.assertEqual(response["error"], "viewer is read-only")
-            self.assertEqual(graph["qParams"], {"clickedId": "37_2_0"})
-
-    def test_save_graph_updates_qparams_when_writes_enabled(self) -> None:
-        with run_test_server(allow_writes=True) as client:
             write_demo_graph(client.graph_dir, slug="demo")
 
             client.post("/save_graph/demo", {"qParams": {"clickedId": "changed"}})
@@ -472,7 +434,7 @@ class BiologyServerTests(unittest.TestCase):
             )
 
     def test_upload_graph_writes_graph_and_metadata(self) -> None:
-        with run_test_server(allow_writes=True) as client:
+        with run_test_server() as client:
             graph = upload_graph_payload(slug="saved graph")
             response = client.post(
                 "/api/upload_graph",
@@ -492,7 +454,7 @@ class BiologyServerTests(unittest.TestCase):
             self.assertEqual([entry["slug"] for entry in metadata["graphs"]], ["edited-graph"])
 
     def test_upload_graph_uses_metadata_slug_without_override(self) -> None:
-        with run_test_server(allow_writes=True) as client:
+        with run_test_server() as client:
             response = client.post(
                 "/api/upload_graph",
                 {"graph": upload_graph_payload(slug="Saved Graph")},
@@ -505,7 +467,7 @@ class BiologyServerTests(unittest.TestCase):
             )
 
     def test_upload_graph_rejects_invalid_payload(self) -> None:
-        with run_test_server(allow_writes=True) as client:
+        with run_test_server() as client:
             response = client.post(
                 "/api/upload_graph",
                 {"graph": {"metadata": {"slug": "bad"}, "nodes": [], "links": []}},
@@ -513,72 +475,6 @@ class BiologyServerTests(unittest.TestCase):
             )
 
             self.assertIn("graph.metadata.prompt_tokens", response["error"])
-
-    def test_static_export_copies_viewer_assets_and_graph_data(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            graph_dir = root / "graphs"
-            feature_dir = root / "feature-source"
-            frontend_dir = root / "frontend"
-            static_dir = root / "static"
-            output_dir = root / "dist"
-            frontend_dir.mkdir()
-            static_dir.mkdir()
-            write_demo_graph(graph_dir, slug="demo")
-            feature_dir.mkdir()
-            (feature_dir / "custom-scan").mkdir()
-            (feature_dir / "custom-scan" / "2.json").write_text(
-                json.dumps({"featureIndex": 2}), encoding="utf-8"
-            )
-            (feature_dir / "custom-scan" / "3.json").write_text(
-                json.dumps({"featureIndex": 3}), encoding="utf-8"
-            )
-            (frontend_dir / "util.js").write_text("window.util = {}", encoding="utf-8")
-            (static_dir / "index.html").write_text("viewer", encoding="utf-8")
-            (static_dir / "biology-server.js").write_text("app", encoding="utf-8")
-            (static_dir / "biology-server.css").write_text("css", encoding="utf-8")
-            graph = json.loads((graph_dir / "demo.json").read_text(encoding="utf-8"))
-            graph["metadata"]["scan"] = "./data/features/custom-scan"
-            graph["nodes"].append(
-                {
-                    "node_id": "2_2_0",
-                    "feature": 2,
-                    "layer": "2",
-                    "ctx_idx": 0,
-                    "feature_type": "cross layer transcoder",
-                    "run_idx": 0,
-                    "reverse_ctx_idx": 0,
-                    "jsNodeId": "2_2-0",
-                    "clerp": "demo feature",
-                }
-            )
-            (graph_dir / "demo.json").write_text(json.dumps(graph), encoding="utf-8")
-            (graph_dir / "graph-metadata.json").write_text(
-                json.dumps({"graphs": [graph["metadata"]]}),
-                encoding="utf-8",
-            )
-
-            exported = export_static_viewer(
-                output_dir=output_dir,
-                graph_file_dir=graph_dir,
-                frontend_dir=frontend_dir,
-                static_dir=static_dir,
-                feature_dir=feature_dir,
-            )
-
-            self.assertEqual(exported, output_dir.resolve())
-            self.assertEqual((output_dir / "index.html").read_text(encoding="utf-8"), "viewer")
-            self.assertEqual(
-                (output_dir / "ct" / "util.js").read_text(encoding="utf-8"), "window.util = {}"
-            )
-            self.assertTrue((output_dir / "data" / "graph-metadata.json").exists())
-            self.assertTrue((output_dir / "data" / "features" / "custom-scan" / "2.json").exists())
-            self.assertFalse((output_dir / "data" / "features" / "custom-scan" / "3.json").exists())
-            self.assertTrue((output_dir / "graph_data" / "demo.json").exists())
-            exported_metadata = json.loads(
-                (output_dir / "data" / "graph-metadata.json").read_text(encoding="utf-8")
-            )
-            self.assertEqual([entry["slug"] for entry in exported_metadata["graphs"]], ["demo"])
 
 
 def upload_graph_payload(*, slug: str) -> dict[str, Any]:
@@ -677,14 +573,8 @@ class HttpTestClient:
 
 
 class run_test_server:
-    def __init__(
-        self,
-        *,
-        ct_assets: dict[str, str] | None = None,
-        allow_writes: bool = False,
-    ) -> None:
+    def __init__(self, *, ct_assets: dict[str, str] | None = None) -> None:
         self.ct_assets = ct_assets or {}
-        self.allow_writes = allow_writes
         self.tempdir: tempfile.TemporaryDirectory[str] | None = None
         self.server = None
         self.graph_dir: Path | None = None
@@ -708,7 +598,6 @@ class run_test_server:
             static_dir=static_dir,
             port=0,
             host="127.0.0.1",
-            allow_writes=self.allow_writes,
         )
         return HttpTestClient(self.server.httpd.server_address[1], self.graph_dir)
 

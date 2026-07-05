@@ -37,12 +37,10 @@ class BiologyApp:
         graph_file_dir: Path | str = DEFAULT_GRAPH_DIR,
         frontend_dir: Path | str | None = None,
         static_dir: Path | str = DEFAULT_STATIC_DIR,
-        allow_writes: bool = False,
     ) -> None:
         self.graph_file_dir = Path(graph_file_dir).resolve()
         self.frontend_dir = Path(frontend_dir).resolve() if frontend_dir else resolve_frontend_dir()
         self.static_dir = Path(static_dir).resolve()
-        self.allow_writes = allow_writes
         self.graph_file_dir.mkdir(parents=True, exist_ok=True)
 
     def shutdown(self) -> None:
@@ -117,11 +115,9 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
         path = parsed.path
 
         if self.command == "POST" and path == "/api/upload_graph":
-            self._require_writes_enabled()
             self._send_json(self.server.app.upload_graph(self._read_json_body()), status=201)
             return
         if self.command == "POST" and path.startswith("/save_graph/"):
-            self._require_writes_enabled()
             self._handle_save_graph(path, send_body=send_body)
             return
         if self.command in {"GET", "HEAD"} and path.startswith(("/data/", "/graph_data/")):
@@ -168,10 +164,6 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
                 return
         raise RequestError(404, "not found")
 
-    def _require_writes_enabled(self) -> None:
-        if not self.server.app.allow_writes:
-            raise RequestError(405, "viewer is read-only")
-
     def _read_json_body(self) -> dict[str, Any]:
         content_length = int(self.headers.get("Content-Length", "0"))
         if content_length <= 0:
@@ -202,10 +194,16 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
         self._send_json({"ok": True}, send_body=send_body)
 
     def _serve_metadata(self, *, send_body: bool) -> None:
-        self._send_json(
-            available_graph_metadata(self.server.app.graph_file_dir),
-            send_body=send_body,
-        )
+        metadata_path = self.server.app.graph_file_dir / "graph-metadata.json"
+        if metadata_path.exists():
+            self._serve_file(
+                self.server.app.graph_file_dir,
+                "graph-metadata.json",
+                send_body=send_body,
+                no_store=True,
+            )
+            return
+        self._send_json({"graphs": []}, send_body=send_body)
 
     def _serve_file(
         self, root: Path, rel_path: str, *, send_body: bool, no_store: bool = False
@@ -276,13 +274,11 @@ def serve(
     static_dir: Path | str = DEFAULT_STATIC_DIR,
     port: int = 8041,
     host: str = "",
-    allow_writes: bool = False,
 ) -> Server:
     app = BiologyApp(
         graph_file_dir=graph_file_dir,
         frontend_dir=frontend_dir,
         static_dir=static_dir,
-        allow_writes=allow_writes,
     )
     httpd = BiologyTCPServer((host, port), BiologyRequestHandler, app)
     server_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -367,58 +363,6 @@ def normalize_uploaded_graph(
     return graph, normalized_metadata
 
 
-def available_graph_metadata(graph_file_dir: Path | str) -> dict[str, list[dict[str, Any]]]:
-    """Return metadata entries for graph JSONs that actually exist on disk."""
-
-    graph_dir = Path(graph_file_dir)
-    graph_files = {
-        path.stem: path
-        for path in sorted(graph_dir.glob("*.json"))
-        if path.name != "graph-metadata.json" and path.is_file()
-    }
-    metadata_path = graph_dir / "graph-metadata.json"
-    raw_graphs: list[Any] = []
-    if metadata_path.exists():
-        with metadata_path.open(encoding="utf-8") as handle:
-            payload = json.load(handle)
-        graphs = payload.get("graphs") if isinstance(payload, dict) else None
-        if isinstance(graphs, list):
-            raw_graphs = graphs
-
-    out: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for entry in raw_graphs:
-        if not isinstance(entry, dict):
-            continue
-        slug = entry.get("slug")
-        if not isinstance(slug, str) or slug not in graph_files or slug in seen:
-            continue
-        out.append(dict(entry))
-        seen.add(slug)
-
-    for slug, path in graph_files.items():
-        if slug in seen:
-            continue
-        metadata = _metadata_from_graph_file(path, fallback_slug=slug)
-        out.append(metadata)
-        seen.add(slug)
-
-    return {"graphs": out}
-
-
-def _metadata_from_graph_file(path: Path, *, fallback_slug: str) -> dict[str, Any]:
-    with path.open(encoding="utf-8") as handle:
-        graph = json.load(handle)
-    metadata = graph.get("metadata") if isinstance(graph, dict) else None
-    if not isinstance(metadata, dict):
-        return {"slug": fallback_slug, "prompt": fallback_slug}
-    normalized = dict(metadata)
-    normalized["slug"] = fallback_slug
-    if not isinstance(normalized.get("prompt"), str):
-        normalized["prompt"] = fallback_slug
-    return normalized
-
-
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
@@ -443,11 +387,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--graph-file-dir", type=Path, default=DEFAULT_GRAPH_DIR)
     parser.add_argument("--frontend-dir", type=Path, default=None)
     parser.add_argument("--static-dir", type=Path, default=DEFAULT_STATIC_DIR)
-    parser.add_argument(
-        "--allow-writes",
-        action="store_true",
-        help="Enable local upload/save endpoints. Public viewer deployments should omit this.",
-    )
     return parser
 
 
@@ -460,7 +399,6 @@ def main(argv: list[str] | None = None) -> None:
         static_dir=args.static_dir,
         port=args.port,
         host=args.host,
-        allow_writes=args.allow_writes,
     )
     try:
         while True:

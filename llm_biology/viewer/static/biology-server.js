@@ -1,6 +1,9 @@
 ;(function () {
   const els = {
     graphSelect: document.querySelector('#graph-select'),
+    slug: document.querySelector('#slug'),
+    uploadFile: document.querySelector('#upload-file'),
+    uploadButton: document.querySelector('#upload-button'),
     status: document.querySelector('#status'),
   }
 
@@ -20,19 +23,23 @@
     const slug = els.graphSelect.value
     if (slug) renderGraph(slug, { resetGraphState: true })
   })
+  els.uploadFile.addEventListener('change', () => {
+    els.uploadButton.disabled = !selectedUploadFile()
+  })
+  els.uploadButton.addEventListener('click', uploadGraph)
 
   loadGraphList()
 
   async function loadGraphList(preferredSlug) {
     try {
-      const meta = await getJson('./data/graph-metadata.json')
+      const meta = await getJson('/data/graph-metadata.json')
       const graphs = Array.isArray(meta.graphs) ? meta.graphs : []
       els.graphSelect.innerHTML = ''
       graphs.forEach(graph => {
         if (!graph || typeof graph.slug !== 'string') return
         const option = document.createElement('option')
         option.value = graph.slug
-        option.textContent = graph.slug
+        option.textContent = graph.prompt || graph.slug
         els.graphSelect.appendChild(option)
       })
 
@@ -46,6 +53,39 @@
       renderGraph(slug)
     } catch (err) {
       renderError(err)
+    }
+  }
+
+  async function uploadGraph() {
+    const file = selectedUploadFile()
+    if (!file) {
+      setStatus('Choose a graph JSON file')
+      return
+    }
+
+    setBusy(true)
+    setStatus('Uploading graph...')
+
+    try {
+      let graph
+      try {
+        graph = JSON.parse(await file.text())
+      } catch (_err) {
+        throw new Error('Upload file must be valid JSON')
+      }
+
+      const uploaded = await postJson('/api/upload_graph', {
+        graph,
+        slug: cleanValue(els.slug.value),
+        filename: file.name,
+      })
+      setStatus(`Uploaded: ${uploaded.slug}`)
+      await loadGraphList(uploaded.slug)
+      renderGraph(uploaded.slug, { resetGraphState: true })
+    } catch (err) {
+      renderError(err)
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -118,6 +158,59 @@
         .style('align-items', 'center')
         .style('flex', '1')
         .style('gap', '20px')
+
+      navSel
+        .append('button.save-button')
+        .text('Save')
+        .on('click', saveGraph)
+    }
+
+    function saveGraph() {
+      const slug = visState && visState.slug
+      if (!slug) {
+        console.error('No slug found')
+        return
+      }
+
+      const saveButton = navSel.select('.save-button')
+      saveButton.text('Saving...').attr('disabled', true).style('opacity', 0.6)
+
+      fetch(`/save_graph/${slug}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          qParams: Object.fromEntries(
+            graphStateParamKeys
+              .map(k => [k, util.params.get(k)])
+              .filter(([_k, v]) => v !== undefined && v !== null && v !== 'null')
+          ),
+        }),
+      })
+        .then(response => {
+          if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`)
+          saveButton
+            .text('Saved!')
+            .style('background-color', '#e6f7e6')
+            .style('border-color', '#8bc34a')
+          setTimeout(resetSaveButton, 2000)
+        })
+        .catch(error => {
+          console.error('Error saving graph:', error)
+          saveButton
+            .text('Error!')
+            .style('background-color', '#ffebee')
+            .style('border-color', '#f44336')
+          setTimeout(resetSaveButton, 2000)
+        })
+
+      function resetSaveButton() {
+        saveButton
+          .text('Save')
+          .attr('disabled', null)
+          .style('opacity', null)
+          .style('background-color', null)
+          .style('border-color', null)
+      }
     }
 
     function render() {
@@ -184,7 +277,6 @@
         clickedId: visState.clickedId,
         clickedIdCb: id => util.params.set('clickedId', id),
         isGridsnap: visState.isGridsnap || true,
-        isEditMode: false,
       }
       if (visState.pruningThreshold !== undefined) {
         options.pruningThreshold = visState.pruningThreshold
@@ -206,11 +298,31 @@
     return { show }
   }
 
+  async function postJson(url, body) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    return data
+  }
+
   async function getJson(url) {
     const res = await fetch(url)
     const data = await res.json().catch(() => ({}))
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     return data
+  }
+
+  function cleanValue(value) {
+    const trimmed = value.trim()
+    return trimmed ? trimmed : undefined
+  }
+
+  function selectedUploadFile() {
+    return els.uploadFile.files && els.uploadFile.files[0]
   }
 
   function normalizePruningThreshold(value, max) {
@@ -254,6 +366,10 @@
     }
 
     return typeof value === 'string' && value ? value : null
+  }
+
+  function setBusy(isBusy) {
+    els.uploadButton.disabled = isBusy || !selectedUploadFile()
   }
 
   function setStatus(text) {

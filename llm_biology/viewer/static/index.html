@@ -3,11 +3,11 @@
 <meta name="viewport" content="width=1100, initial-scale=1">
 <title>Biology Attribution Graphs</title>
 
-<link rel="stylesheet" href="./ct/style.css">
-<link rel="stylesheet" href="./ct/attribution_graph/cg.css">
-<link rel="stylesheet" href="./ct/attribution_graph/gridsnap/gridsnap.css">
-<link rel="stylesheet" href="./ct/feature_examples/feature-examples.css">
-<link rel="stylesheet" href="./biology-server.css">
+<link rel="stylesheet" href="/ct/style.css">
+<link rel="stylesheet" href="/ct/attribution_graph/cg.css">
+<link rel="stylesheet" href="/ct/attribution_graph/gridsnap/gridsnap.css">
+<link rel="stylesheet" href="/ct/feature_examples/feature-examples.css">
+<link rel="stylesheet" href="/biology-server.css">
 
 <main class="viewer-shell">
   <section class="viewer-toolbar">
@@ -15,6 +15,15 @@
       Graph
       <select id="graph-select"></select>
     </label>
+    <label>
+      Upload slug
+      <input id="slug" type="text" placeholder="auto">
+    </label>
+    <label>
+      Graph JSON
+      <input id="upload-file" type="file" accept=".json,application/json">
+    </label>
+    <button id="upload-button" type="button" disabled>Upload</button>
     <div class="status-line" id="status">Loading graphs...</div>
   </section>
 
@@ -29,21 +38,21 @@
 <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
 <script src="https://unpkg.com/pako@2.1.0/dist/pako.min.js"></script>
 
-<script src="./ct/feature_examples/init-feature-examples-list.js"></script>
-<script src="./ct/feature_examples/init-feature-examples-logits.js"></script>
-<script src="./ct/feature_examples/init-feature-examples.js"></script>
+<script src="/ct/feature_examples/init-feature-examples-list.js"></script>
+<script src="/ct/feature_examples/init-feature-examples-logits.js"></script>
+<script src="/ct/feature_examples/init-feature-examples.js"></script>
 
-<script src="./ct/util.js"></script>
-<script src="./ct/attribution_graph/util-cg.js"></script>
-<script src="./ct/attribution_graph/render-act-histogram.js"></script>
-<script src="./ct/attribution_graph/gridsnap/init-gridsnap.js"></script>
-<script src="./ct/attribution_graph/init-cg-button-container.js"></script>
-<script src="./ct/attribution_graph/init-cg-link-graph.js"></script>
-<script src="./ct/attribution_graph/init-cg-node-connections.js"></script>
-<script src="./ct/attribution_graph/init-cg-clerp-list.js"></script>
-<script src="./ct/attribution_graph/init-cg-feature-detail.js"></script>
-<script src="./ct/attribution_graph/init-cg-feature-scatter.js"></script>
-<script src="./ct/attribution_graph/init-cg-subgraph.js"></script>
-<script src="./ct/attribution_graph/init-cg.js"></script>
+<script src="/ct/util.js"></script>
+<script src="/ct/attribution_graph/util-cg.js"></script>
+<script src="/ct/attribution_graph/render-act-histogram.js"></script>
+<script src="/ct/attribution_graph/gridsnap/init-gridsnap.js"></script>
+<script src="/ct/attribution_graph/init-cg-button-container.js"></script>
+<script src="/ct/attribution_graph/init-cg-link-graph.js"></script>
+<script src="/ct/attribution_graph/init-cg-node-connections.js"></script>
+<script src="/ct/attribution_graph/init-cg-clerp-list.js"></script>
+<script src="/ct/attribution_graph/init-cg-feature-detail.js"></script>
+<script src="/ct/attribution_graph/init-cg-feature-scatter.js"></script>
+<script src="/ct/attribution_graph/init-cg-subgraph.js"></script>
+<script src="/ct/attribution_graph/init-cg.js"></script>
 
-<script src="./biology-server.js"></script>
+<script src="/biology-server.js"></script>

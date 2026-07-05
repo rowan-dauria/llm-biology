@@ -37,7 +37,6 @@ profiling = [
 
 [project.scripts]
 biology-server = "llm_biology.viewer.server:main"
-biology-export-viewer = "llm_biology.viewer.export_static:main"
 
 [tool.setuptools.packages.find]
 include = [

@@ -30,6 +30,7 @@ body {
 }
 
 .viewer-toolbar select,
+.viewer-toolbar input,
 .viewer-toolbar button {
   height: 32px;
   box-sizing: border-box;
@@ -56,6 +57,15 @@ body {
   width: min(48vw, 520px);
 }
 
+#slug {
+  width: 220px;
+}
+
+#upload-file {
+  width: 260px;
+  padding: 3px 8px;
+}
+
 .status-line {
   min-width: 180px;
   align-self: center;
@@ -73,6 +83,17 @@ body {
   padding: 8px 14px;
   border-bottom: 1px solid #e4e7eb;
   background: #fff;
+}
+
+.nav .save-button {
+  height: 32px;
+  border: 1px solid #bcc5cf;
+  border-radius: 6px;
+  background: #fff;
+  color: #171717;
+  padding: 0 13px;
+  font: 13px system-ui, sans-serif;
+  cursor: pointer;
 }
 
 .slider-container {
