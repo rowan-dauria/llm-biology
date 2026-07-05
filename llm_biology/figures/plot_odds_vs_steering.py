@@ -90,7 +90,6 @@ def main() -> None:
     clean_ref = float(to_metric(clean_prob, metric))
     token = target["token"]
     supernode = base["metadata"]["supernode"]
-    prompt = base["metadata"]["prompt"]
 
     # Targeted curve from the sweep file.
     s_results = sorted(sweep["results"], key=lambda r: r["magnitude"])
@@ -117,19 +116,25 @@ def main() -> None:
     )
 
     if metric == "odds":
-        ylabel = f"odds of target token {token!r}   =  p / (1 − p)"
-        ref_label = f"clean odds = {clean_ref:.1f}"
+        ylabel = f"Odds of target token {token!r}"
+        ref_label = f"Clean odds = {clean_ref:.1f}"
         use_log = not args.linear_y
     else:
-        ylabel = f"probability of target token {token!r}"
-        ref_label = f"clean prob = {clean_ref:.3f}"
+        ylabel = f"Probability of target token {token!r}"
+        ref_label = f"Clean prob = {clean_ref:.3f}"
         use_log = False
+
+    # Match report/figures/texas_top_token_redistribution.pdf's type scale and
+    # Paul Tol-derived colour scheme (dark green for the targeted curve).
+    label_fontsize = 16
+    tick_fontsize = 13
+    TARGETED_COLOUR = "#117733"  # dark green
 
     fig, ax = plt.subplots(figsize=(8.2, 5.2))
 
     # Null band (5-95th pct) as a faint fill to guide the eye.
     ax.fill_between(
-        b_mag, p5, p95, color="0.82", zorder=1, label=f"baseline null 5–95th pct (n={n_draws})"
+        b_mag, p5, p95, color="0.82", zorder=1, label=f"Baseline null 5–95th pct (n={n_draws})"
     )
     # Baseline median with asymmetric 5-95th error bars.
     ax.errorbar(
@@ -142,14 +147,14 @@ def main() -> None:
         lw=1.2,
         capsize=3,
         zorder=3,
-        label="baseline median ± 5–95th pct",
+        label="Baseline median ± 5–95th pct",
     )
     # Targeted curve.
     ax.plot(
         s_mag,
         s_metric,
         "s-",
-        color="tab:red",
+        color=TARGETED_COLOUR,
         ms=5,
         lw=1.9,
         zorder=4,
@@ -193,13 +198,13 @@ def main() -> None:
         else:
             ax.set_ylim(vis_lo / 1.4, vis_hi * 1.4)
 
-    ax.set_xlabel("steering magnitude  m   (feature value = m × clean activation)")
-    ax.set_ylabel(ylabel)
-    ax.set_title(
-        f"{supernode} supernode vs random size-matched baseline\n{prompt!r} → {token!r}",
-        fontsize=10,
+    ax.set_xlabel(
+        "Steering factor",
+        fontsize=label_fontsize,
     )
-    ax.legend(fontsize=8, loc="best")
+    ax.set_ylabel(ylabel, fontsize=label_fontsize)
+    ax.tick_params(axis="both", labelsize=tick_fontsize)
+    ax.legend(fontsize=tick_fontsize, loc="best")
     ax.grid(True, which="both", alpha=0.25)
     fig.tight_layout()
 
@@ -207,8 +212,8 @@ def main() -> None:
         out = args.output
     else:
         stem = args.sweep_json.stem.replace("intervention-sweep", f"{metric}-vs-baseline")
-        out = args.sweep_json.with_name(f"{stem}.png")
-    fig.savefig(out, dpi=150)
+        out = args.sweep_json.with_name(f"{stem}.pdf")
+    fig.savefig(out)
     print(f"wrote {out}")
 
 

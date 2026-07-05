@@ -39,6 +39,7 @@ PALETTE = [
 ]
 OTHER_COLOUR = "#e8e8e8"
 TARGET_COLOUR = "#DDCC77"  # sand
+HOUSTON_COLOUR = "#555555"  # dark grey, distinct from the light "other"/palette greys
 
 
 def load_sweep(path: Path) -> dict[str, Any]:
@@ -94,14 +95,18 @@ def main() -> None:
     mags, token_traj = build_series(results, top_tokens)
     target_tok = results[0]["target"]["token"]
 
-    # Shared colour map: target token gets the reserved sand swatch; the rest
-    # cycle through the remaining palette entries (sand excluded, so it isn't
-    # reused for a second token).
+    # Shared colour map: target token gets the reserved sand swatch, Houston
+    # gets a dedicated dark grey, and the rest cycle through the remaining
+    # palette entries (sand excluded, so it isn't reused for a second token).
     colour_cycle = iter(c for c in PALETTE if c.lower() != TARGET_COLOUR.lower())
-    token_colour = {
-        tok: (TARGET_COLOUR if tok == target_tok else next(colour_cycle, None))
-        for tok in top_tokens
-    }
+    token_colour = {}
+    for tok in top_tokens:
+        if tok == target_tok:
+            token_colour[tok] = TARGET_COLOUR
+        elif tok.strip().lower() == "houston":
+            token_colour[tok] = HOUSTON_COLOUR
+        else:
+            token_colour[tok] = next(colour_cycle, None)
 
     def disp(tok: str) -> str:
         if tok in TOKEN_DISPLAY:
@@ -133,10 +138,7 @@ def main() -> None:
     other_poly.set_linewidth(0.0)
     ax_top.set_ylim(0, 1)
     ax_top.set_ylabel("Next-token probability mass", fontsize=label_fontsize)
-    ax_top.set_xlabel(
-        "Steering factor  m   (1 = clean, 0 = ablate, <0 = sign-flipped)",
-        fontsize=label_fontsize,
-    )
+    ax_top.set_xlabel("Steering factor", fontsize=label_fontsize)
     ax_top.tick_params(axis="both", labelsize=tick_fontsize)
     ax_top.legend(
         loc="center left",
