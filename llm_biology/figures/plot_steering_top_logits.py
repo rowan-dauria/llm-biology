@@ -2,14 +2,9 @@
 
 Consumes the JSON written by ``sweep_supernode_interventions.py`` (which records
 ``top_intervened_tokens`` per magnitude) and shows where next-token probability
-mass goes as the supernode is steered. Both panels share the magnitude x-axis and
-trace the same top-N tokens (by peak probability over the plotted range), labelled
-by raw token string:
-
-- Top: stacked-area probability mass of the top-N tokens (+ an "other" remainder),
-  the big-picture handoff between tokens.
-- Bottom: log-y trajectories of the same tokens, to expose the smaller gains
-  (e.g. " Texas", " Houston") that the linear stack hides.
+mass goes as the supernode is steered, as a stacked area of the top-N tokens
+(by peak probability over the plotted range, labelled by raw token string)
+plus an "other" remainder.
 
 Use this for the report supplement's top-token redistribution figure.
 """
@@ -28,20 +23,22 @@ import numpy as np
 # Raw token strings are used as labels, except for the Chinese-Austin token
 # (DejaVu Sans lacks CJK glyphs, so romanise it).
 TOKEN_DISPLAY = {"奥斯": "Austin (zh)"}
-# Colour cycle for non-target tokens (tab10); the target token is forced black.
+# Paul Tol's colour-blind-safe qualitative palette; the target token gets its
+# own reserved entry (sand) so it stands out from the rest of the cycle.
 PALETTE = [
-    "#1f77b4",
-    "#ff7f0e",
-    "#2ca02c",
-    "#d62728",
-    "#9467bd",
-    "#8c564b",
-    "#e377c2",
-    "#7f7f7f",
-    "#bcbd22",
-    "#17becf",
+    "#332288",  # dark blue
+    "#88CCEE",  # light blue
+    "#44AA99",  # teal
+    "#117733",  # green
+    "#999933",  # olive
+    "#DDCC77",  # sand
+    "#CC6677",  # rose
+    "#882255",  # wine
+    "#AA4499",  # purple
+    "#DDDDDD",  # grey
 ]
 OTHER_COLOUR = "#e8e8e8"
+TARGET_COLOUR = "#DDCC77"  # sand
 
 
 def load_sweep(path: Path) -> dict[str, Any]:
@@ -85,7 +82,7 @@ def main() -> None:
         help="Crop x-axis lower bound (e.g. -12 to hide OOD tail).",
     )
     parser.add_argument(
-        "--top-n", type=int, default=10, help="How many top tokens to show in both panels."
+        "--top-n", type=int, default=10, help="How many top tokens to show in the stack."
     )
     args = parser.parse_args()
 
@@ -97,60 +94,63 @@ def main() -> None:
     mags, token_traj = build_series(results, top_tokens)
     target_tok = results[0]["target"]["token"]
 
-    # Shared colour map: target token black, the rest cycle through the palette.
-    colour_cycle = iter(PALETTE)
+    # Shared colour map: target token gets the reserved sand swatch; the rest
+    # cycle through the remaining palette entries (sand excluded, so it isn't
+    # reused for a second token).
+    colour_cycle = iter(c for c in PALETTE if c.lower() != TARGET_COLOUR.lower())
     token_colour = {
-        tok: ("#000000" if tok == target_tok else next(colour_cycle, None)) for tok in top_tokens
+        tok: (TARGET_COLOUR if tok == target_tok else next(colour_cycle, None))
+        for tok in top_tokens
     }
 
     def disp(tok: str) -> str:
-        return TOKEN_DISPLAY.get(tok, f"{tok!r}")
+        if tok in TOKEN_DISPLAY:
+            return TOKEN_DISPLAY[tok]
+        stripped = tok.strip()
+        if not stripped:
+            return "(Newline)" if "\n" in tok else "(Space)"
+        return stripped[0].upper() + stripped[1:]
 
-    fig, (ax_top, ax_bot) = plt.subplots(
-        2, 1, figsize=(11, 9), sharex=True, gridspec_kw={"height_ratios": [1.1, 1]}
-    )
+    label_fontsize = 16
+    tick_fontsize = 13
 
-    # --- Panel A: stacked top-N token mass (+ "other" remainder) --------------
+    fig, ax_top = plt.subplots(figsize=(11, 6))
+
+    # --- Stacked top-N token mass (+ "other" remainder) ------------------------
     stack_arrays = [np.nan_to_num(token_traj[tok], nan=0.0) for tok in top_tokens]
     other = np.clip(1.0 - np.sum(stack_arrays, axis=0), 0.0, None)
-    ax_top.stackplot(
+    polys = ax_top.stackplot(
         mags,
         *stack_arrays,
         other,
-        labels=[disp(tok) for tok in top_tokens] + ["other (not in top-N)"],
+        labels=[disp(tok) for tok in top_tokens] + ["Other (not in top-N)"],
         colors=[token_colour[tok] for tok in top_tokens] + [OTHER_COLOUR],
         alpha=0.9,
     )
+    other_poly = polys[-1]
+    other_poly.set_hatch("///")
+    other_poly.set_edgecolor("0.6")
+    other_poly.set_linewidth(0.0)
     ax_top.set_ylim(0, 1)
-    ax_top.set_ylabel("next-token probability mass")
-    ax_top.legend(loc="center left", bbox_to_anchor=(1.01, 0.5), fontsize=8, frameon=False)
+    ax_top.set_ylabel("Next-token probability mass", fontsize=label_fontsize)
+    ax_top.set_xlabel(
+        "Steering factor  m   (1 = clean, 0 = ablate, <0 = sign-flipped)",
+        fontsize=label_fontsize,
+    )
+    ax_top.tick_params(axis="both", labelsize=tick_fontsize)
+    ax_top.legend(
+        loc="center left",
+        bbox_to_anchor=(1.01, 0.5),
+        fontsize=label_fontsize,
+        frameon=False,
+    )
 
-    # --- Panel B: same tokens, log-y individual trajectories -----------------
-    floor = 1e-6
-    for tok in top_tokens:
-        y = token_traj[tok].copy()
-        y[y < floor] = np.nan  # don't draw the unrecorded tail
-        ax_bot.plot(
-            mags,
-            y,
-            marker="o",
-            ms=3,
-            lw=1.6,
-            color=token_colour[tok],
-            label=disp(tok),
-        )
-    ax_bot.set_yscale("log")
-    ax_bot.set_ylim(floor, 1.2)
-    ax_bot.set_ylabel("token probability (log)")
-    ax_bot.set_xlabel("steering factor  m   (1 = clean, 0 = ablate, <0 = sign-flipped)")
-
-    # reference lines on both panels
-    for ax in (ax_top, ax_bot):
-        ax.axvline(1.0, color="red", lw=1, ls="-", zorder=10)
-        ax.axvline(0.0, color="red", lw=1, ls=":", zorder=10)
-        ax.margins(x=0)
-    ax_top.text(1.0, 1.005, "clean", ha="center", va="bottom", fontsize=7, color="0.3")
-    ax_top.text(0.0, 1.005, "ablate", ha="center", va="bottom", fontsize=7, color="0.3")
+    # reference lines
+    ax_top.axvline(1.0, color="red", lw=1, ls="-", zorder=10)
+    ax_top.axvline(0.0, color="red", lw=1, ls=":", zorder=10)
+    ax_top.margins(x=0)
+    ax_top.text(1.0, 1.005, "Clean", ha="left", va="bottom", fontsize=label_fontsize, color="0.3")
+    ax_top.text(0.0, 1.005, "Ablate", ha="right", va="bottom", fontsize=label_fontsize, color="0.3")
 
     fig.tight_layout()
     out = args.output or args.sweep_json.with_name(
