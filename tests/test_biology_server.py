@@ -530,10 +530,33 @@ class BiologyServerTests(unittest.TestCase):
             (feature_dir / "custom-scan" / "2.json").write_text(
                 json.dumps({"featureIndex": 2}), encoding="utf-8"
             )
+            (feature_dir / "custom-scan" / "3.json").write_text(
+                json.dumps({"featureIndex": 3}), encoding="utf-8"
+            )
             (frontend_dir / "util.js").write_text("window.util = {}", encoding="utf-8")
             (static_dir / "index.html").write_text("viewer", encoding="utf-8")
             (static_dir / "biology-server.js").write_text("app", encoding="utf-8")
             (static_dir / "biology-server.css").write_text("css", encoding="utf-8")
+            graph = json.loads((graph_dir / "demo.json").read_text(encoding="utf-8"))
+            graph["metadata"]["scan"] = "./data/features/custom-scan"
+            graph["nodes"].append(
+                {
+                    "node_id": "2_2_0",
+                    "feature": 2,
+                    "layer": "2",
+                    "ctx_idx": 0,
+                    "feature_type": "cross layer transcoder",
+                    "run_idx": 0,
+                    "reverse_ctx_idx": 0,
+                    "jsNodeId": "2_2-0",
+                    "clerp": "demo feature",
+                }
+            )
+            (graph_dir / "demo.json").write_text(json.dumps(graph), encoding="utf-8")
+            (graph_dir / "graph-metadata.json").write_text(
+                json.dumps({"graphs": [graph["metadata"]]}),
+                encoding="utf-8",
+            )
 
             exported = export_static_viewer(
                 output_dir=output_dir,
@@ -550,6 +573,7 @@ class BiologyServerTests(unittest.TestCase):
             )
             self.assertTrue((output_dir / "data" / "graph-metadata.json").exists())
             self.assertTrue((output_dir / "data" / "features" / "custom-scan" / "2.json").exists())
+            self.assertFalse((output_dir / "data" / "features" / "custom-scan" / "3.json").exists())
             self.assertTrue((output_dir / "graph_data" / "demo.json").exists())
             exported_metadata = json.loads(
                 (output_dir / "data" / "graph-metadata.json").read_text(encoding="utf-8")
