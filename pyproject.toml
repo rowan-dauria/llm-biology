@@ -25,6 +25,9 @@ api-labels = [
     "anthropic",
     "openai",
 ]
+heretic = [
+    "heretic-llm @ git+https://github.com/rowan-dauria/heretic.git@de4de5d",
+]
 dev = [
     "pre-commit",
     "pyright[nodejs]",

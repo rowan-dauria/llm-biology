@@ -159,7 +159,13 @@ python -m pytest \
 
 ## Heretic Refusal Runs
 
-The Heretic changes are kept as a companion fork, not vendored here. See
-`../docs/heretic-refusal.md` for the exact branch/commit, layer audit, and
-reproduction notes. The submission repo contains only the graph, feature-panel,
-comparison, and plotting code needed to reproduce the reported analyses.
+The Heretic (abliteration) changes are kept as a companion fork rather than
+vendored here: [`rowan-dauria/heretic`](https://github.com/rowan-dauria/heretic)
+(package `heretic-llm`), branch `codex/heretic-touched-layers`, pinned at
+commit `de4de5d` — install with the optional `heretic` dependency group
+(`pip install ".[heretic]"`). The methodologically important change on that
+fork excludes the tracked transcoder MLP layers
+(`HERETIC_EXCLUDED_MLP_ABLITERATION_LAYERS="2,12,24,33"`) from abliteration,
+so the same transcoder basis stays valid on the abliterated model. The
+reported results use Optuna trial `113` (KL divergence `0.081`, `3/100`
+refusals vs. `97/100` base-model refusals).
