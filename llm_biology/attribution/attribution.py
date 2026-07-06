@@ -70,6 +70,15 @@ DEFAULT_WINDOW = 10
 
 @dataclass(frozen=True, slots=True)
 class LayerFeatureData:
+    """Sparse, per-layer feature activations for a single forward pass.
+
+    ``positions``/``feature_ids``/``activations`` are parallel 1D tensors over
+    the non-zero (position, feature) pairs; ``encoder_vectors``/
+    ``decoder_vectors`` are the corresponding transcoder rows. ``start`` is the
+    offset of this layer's features within the dense per-forward-pass score
+    vector, so ``start:end`` (see :attr:`end`) slices this layer out of it.
+    """
+
     positions: torch.Tensor
     feature_ids: torch.Tensor
     activations: torch.Tensor
@@ -79,11 +88,14 @@ class LayerFeatureData:
 
     @property
     def end(self) -> int:
+        """Exclusive end offset of this layer's slice in the dense score vector."""
         return self.start + int(self.feature_ids.numel())
 
 
 @dataclass(frozen=True, slots=True)
 class ActiveFeature:
+    """A single active (layer, position, feature) triple discovered during attribution."""
+
     layer: int
     pos: int
     feature: int
@@ -93,11 +105,14 @@ class ActiveFeature:
 
     @property
     def node_id(self) -> str:
+        """Frontend-facing feature node identifier for this activation."""
         return feature_node_id(self.layer, self.feature, self.pos)
 
 
 @dataclass(frozen=True, slots=True)
 class SelectedFeature:
+    """An :class:`ActiveFeature` retained in the final graph, with its logit weight and label."""
+
     layer: int
     pos: int
     feature: int
@@ -110,11 +125,14 @@ class SelectedFeature:
 
     @property
     def node_id(self) -> str:
+        """Frontend-facing feature node identifier for this activation."""
         return feature_node_id(self.layer, self.feature, self.pos)
 
 
 @dataclass(frozen=True, slots=True)
 class TokenCandidate:
+    """A candidate output token with its softmax probability."""
+
     token_id: int
     token: str
     prob: float
@@ -122,6 +140,8 @@ class TokenCandidate:
 
 @dataclass(frozen=True, slots=True)
 class LogitTarget:
+    """An output-logit node selected as an attribution target."""
+
     token_id: int
     token: str
     prob: float
@@ -130,6 +150,8 @@ class LogitTarget:
 
 @dataclass(frozen=True, slots=True)
 class GraphResult:
+    """Result of :meth:`BiologyAttributionRunner.generate_graph`: the exported graph plus its inputs."""
+
     prompt: str
     slug: str
     graph_path: Path
@@ -146,6 +168,7 @@ class GraphResult:
 
 
 def pick_device_dtype() -> tuple[torch.device, torch.dtype]:
+    """Pick the best available accelerator and a matching dtype (CUDA > MPS > CPU)."""
     if torch.cuda.is_available():
         return torch.device("cuda"), torch.bfloat16
     if torch.backends.mps.is_available():
@@ -154,6 +177,8 @@ def pick_device_dtype() -> tuple[torch.device, torch.dtype]:
 
 
 def timed(label: str):
+    """Context manager that prints start/end markers and elapsed time for ``label``."""
+
     class Timer:
         def __enter__(self):
             self.start = time.time()
@@ -167,6 +192,7 @@ def timed(label: str):
 
 
 def parse_layers(raw: str) -> list[int]:
+    """Parse a comma-separated layer-index string (e.g. ``"2,12,24"``) into a list of ints."""
     layers = [int(item.strip()) for item in raw.split(",") if item.strip()]
     if not layers:
         raise ValueError("--layers must contain at least one layer")
@@ -174,6 +200,7 @@ def parse_layers(raw: str) -> list[int]:
 
 
 def slugify(text: str) -> str:
+    """Turn ``text`` into a filesystem-safe slug, falling back to a fixed default if empty."""
     slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", text.strip().lower()).strip("-")
     return slug or "qwen3-circuit"
 
@@ -182,6 +209,12 @@ def layer_feature_data(
     transcoder: SingleLayerTranscoder,
     features: torch.Tensor,
 ) -> LayerFeatureData:
+    """Extract the sparse active-feature set and encoder/decoder rows for one layer.
+
+    ``features`` is the dense ``(n_pos, d_transcoder)`` activation tensor for a
+    single prompt (batch dimension already dropped). Returns an empty
+    :class:`LayerFeatureData` if no feature fired.
+    """
     sparse = features.to_sparse().coalesce()
     if sparse._nnz() == 0:
         empty_long = torch.empty(0, dtype=torch.long, device=features.device)
@@ -211,6 +244,12 @@ def layer_feature_data(
 def demeaned_unembed_vector(
     unembed: torch.Tensor, token_id: int, dtype: torch.dtype
 ) -> torch.Tensor:
+    """Return the unembedding row for ``token_id``, demeaned across the vocabulary.
+
+    Subtracting the mean unembedding direction removes the shared component
+    that boosts most tokens' logits together, isolating the token-specific
+    direction used as the attribution seed for the target logit.
+    """
     row = unembed[token_id]
     return (row - unembed.mean(dim=0)).to(dtype)
 
@@ -221,6 +260,14 @@ def load_transcoders(
     device: torch.device,
     dtype: torch.dtype,
 ) -> dict[int, SingleLayerTranscoder]:
+    """Download (if needed) and load per-layer ``SingleLayerTranscoder``\\ s for ``layers``.
+
+    Resolves cached/downloaded ``layer_<L>.safetensors`` files from the
+    ``mwhanna/qwen3-4b-transcoders`` Hugging Face repo via
+    :func:`huggingface_hub.snapshot_download`, then constructs each transcoder
+    with circuit-tracer's :func:`~llm_biology.compat.load_transcoder` factory
+    (the only circuit-tracer API this project uses for transcoders).
+    """
     wanted_files = [f"layer_{layer}.safetensors" for layer in layers]
     with timed("Resolving transcoder paths"):
         transcoder_dir = Path(snapshot_download(TRANSCODER_REPO, allow_patterns=wanted_files))
@@ -301,6 +348,11 @@ def select_target_token(
     target_token_id: int | None = None,
     target_token: str | None = None,
 ) -> tuple[int, str, float]:
+    """Resolve the attribution target token: explicit id/string, else the argmax token.
+
+    Returns ``(token_id, decoded_token, probability)``. Raises ``ValueError``
+    if ``target_token`` does not encode to exactly one token.
+    """
     if target_token_id is not None:
         selected_token_id = int(target_token_id)
     elif target_token is not None:
@@ -328,6 +380,7 @@ def top_token_candidates(
     *,
     top_k: int,
 ) -> list[TokenCandidate]:
+    """Return the ``top_k`` highest-probability next tokens for ``last_logits``."""
     if top_k <= 0:
         return []
     probs = torch.softmax(last_logits.float(), dim=-1)
@@ -346,6 +399,7 @@ def top_token_candidate(
     tokenizer: PreTrainedTokenizerBase,
     last_logits: torch.Tensor,
 ) -> TokenCandidate:
+    """Return the single highest-probability next token for ``last_logits``."""
     candidates = top_token_candidates(tokenizer, last_logits, top_k=1)
     if not candidates:
         raise RuntimeError("could not select top token from empty logits")
@@ -419,6 +473,7 @@ def selected_features_from_active(
     labels: FeatureLabelMap,
     logit_weights: dict[int, float] | None = None,
 ) -> list[SelectedFeature]:
+    """Attach feature labels and (optional) direct-logit weights to raw active features."""
     logit_weights = logit_weights or {}
     return [
         SelectedFeature(
@@ -436,6 +491,7 @@ def selected_features_from_active(
 
 
 def error_nodes_for_layers(layers: list[int], n_pos: int) -> list[ErrorNode]:
+    """Build one reconstruction-error node per (tracked layer, sequence position)."""
     return [ErrorNode(layer=layer, pos=pos) for layer in layers for pos in range(n_pos)]
 
 
@@ -512,6 +568,7 @@ def row_links(
     input_token_ids: list[int],
     edge_top_k: int,
 ) -> list[GraphLink]:
+    """Build the top-``edge_top_k`` (by |weight|) incoming links for one target node."""
     candidates: list[tuple[float, str, float]] = []
     for feature in selected:
         if feature.score_index is None:
@@ -543,6 +600,11 @@ def normalized_edge_weights(
     links: list[GraphLink],
     node_ids: set[str],
 ) -> dict[int, float]:
+    """Normalize each link's |weight| by the total incoming |weight| at its target node.
+
+    Returns a mapping from ``links`` index to its normalized weight, restricted
+    to links whose endpoints are both in ``node_ids``.
+    """
     row_sums: defaultdict[str, float] = defaultdict(float)
     for link in links:
         if link.source not in node_ids or link.target not in node_ids:
@@ -602,6 +664,11 @@ def cumulative_scores(
     scores: dict[str, float],
     candidate_ids: list[str],
 ) -> dict[str, float]:
+    """Rank ``candidate_ids`` by (clamped-nonnegative) score and return running cumulative mass.
+
+    Ties are broken by original order in ``candidate_ids``. Nodes with
+    non-positive score are omitted from the returned mapping.
+    """
     indexed_scores = [
         (idx, node_id, max(float(scores.get(node_id, 0.0)), 0.0))
         for idx, node_id in enumerate(candidate_ids)
@@ -626,6 +693,13 @@ def keep_feature_ids_by_threshold(
     candidate_ids: list[str] | None = None,
     threshold: float,
 ) -> set[str]:
+    """Select the feature ids to keep under the Anthropic-style node-pruning rule.
+
+    Walks all pruning candidates (features, error nodes, embeddings) in
+    ascending cumulative-influence order and keeps feature ids up to and
+    including the one that first reaches ``threshold``; see Appendix F of the
+    circuit-tracer methods paper for the pruning rule this implements.
+    """
     feature_id_set = set(feature_ids)
     # ``cumulative_by_id`` already encodes the influence-sorted prefix mass.
     # Walk that prefix over all pruning candidates, but only return feature IDs:
@@ -653,6 +727,11 @@ def prune_edges_by_thresholded_influence(
     logit_weights: dict[str, float],
     threshold: float,
 ) -> list[GraphLink]:
+    """Keep the smallest set of highest-scoring edges whose cumulative influence mass reaches ``threshold``.
+
+    Edge score is the product of its normalized weight and its target node's
+    indirect logit influence; ties at the cutoff score are all kept.
+    """
     normalized = normalized_edge_weights(links=links, node_ids=node_ids)
     node_scores = indirect_logit_influence(
         node_ids=node_ids,
@@ -694,6 +773,14 @@ def prune_graph_by_indirect_influence(
     node_threshold: float,
     edge_threshold: float,
 ) -> tuple[list[SelectedFeature], list[GraphLink]]:
+    """Prune the raw attribution graph to its most influential nodes and edges.
+
+    Applies the two-stage Anthropic-style pruning rule: keep the smallest set
+    of features/error/embedding nodes reaching ``node_threshold`` cumulative
+    indirect logit influence, then keep the smallest set of edges among the
+    surviving nodes reaching ``edge_threshold`` cumulative influence mass.
+    Returns the pruned features (with ``influence`` filled in) and pruned links.
+    """
     feature_ids = [feature.node_id for feature in selected]
     embedding_ids = [
         embedding_node_id(vocab_idx, pos) for pos, vocab_idx in enumerate(input_token_ids)
@@ -748,6 +835,7 @@ def prune_graph_by_indirect_influence(
 
 
 def feature_nodes_from_selected(selected: list[SelectedFeature]) -> list[FeatureNode]:
+    """Convert pruned :class:`SelectedFeature`\\ s into frontend-facing :class:`FeatureNode`\\ s."""
     return [
         FeatureNode(
             layer=feature.layer,
@@ -764,6 +852,7 @@ def feature_nodes_from_selected(selected: list[SelectedFeature]) -> list[Feature
 
 
 def selected_feature_to_dict(feature: SelectedFeature) -> dict[str, Any]:
+    """Serialize a :class:`SelectedFeature` to a plain dict for ``.pt`` checkpointing."""
     return {
         "layer": feature.layer,
         "pos": feature.pos,
@@ -831,6 +920,11 @@ def compute_feature_logits(
 
 
 def window_to_frontend_example(rendered: str, value: float) -> dict[str, Any]:
+    """Convert one rendered activation window into a Neuronpedia-style example payload.
+
+    ``rendered`` marks the activating token with ``<<...>>`` if present, else
+    the whole string is treated as a single (non-activating) token.
+    """
     if "<<" in rendered and ">>" in rendered:
         before, rest = rendered.split("<<", 1)
         target, after = rest.split(">>", 1)
@@ -923,6 +1017,11 @@ def build_feature_examples(
 
 
 def resolve_pt_path(save_pt: str | None, slug: str) -> Path | None:
+    """Resolve the ``.pt`` checkpoint path from the ``--save-pt`` CLI value.
+
+    ``None`` disables saving, ``"auto"`` generates a timestamped path under
+    :data:`DEFAULT_PT_DIR`, and any other string is used as a literal path.
+    """
     if save_pt is None:
         return None
     if save_pt == "auto":
@@ -932,7 +1031,19 @@ def resolve_pt_path(save_pt: str | None, slug: str) -> Path | None:
 
 
 class BiologyAttributionRunner:
-    """Lazy-loaded, lock-serialized TransformerLens Qwen attribution runner."""
+    """Lazy-loaded, lock-serialized TransformerLens Qwen attribution runner.
+
+    Owns a single Qwen3-4B :class:`~transformer_lens.HookedTransformer`, its
+    tokenizer, and the per-layer ``SingleLayerTranscoder``\\ s for
+    :attr:`layers`, loading each lazily on first use and caching them across
+    calls. :meth:`generate_graph` is the main entry point: it runs the custom
+    iterative top-K attribution algorithm and Anthropic-style graph pruning
+    (both implemented in this project, not by circuit-tracer) and exports a
+    circuit-tracer-compatible graph JSON via
+    :func:`~llm_biology.attribution.circuit_graph_export.export_circuit_graph`.
+    An internal lock serializes calls so concurrent callers (e.g. the CLI and
+    the viewer server) cannot race to load duplicate model/transcoder copies.
+    """
 
     def __init__(
         self,
@@ -964,11 +1075,13 @@ class BiologyAttributionRunner:
         self._transcoders: dict[int, SingleLayerTranscoder] | None = None
 
     def _ensure_device_dtype(self) -> tuple[torch.device, torch.dtype]:
+        """Pick and cache the runner's device/dtype on first use."""
         if self._device is None or self._dtype is None:
             self._device, self._dtype = pick_device_dtype()
         return self._device, self._dtype
 
     def _ensure_tokenizer(self) -> PreTrainedTokenizerBase:
+        """Load and cache the tokenizer on first use."""
         tokenizer = self._tokenizer
         if tokenizer is not None:
             return tokenizer
@@ -986,12 +1099,14 @@ class BiologyAttributionRunner:
         return tokenizer
 
     def _empty_device_cache(self) -> None:
+        """Release cached accelerator memory back to the OS/driver, if any accelerator is present."""
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         if torch.backends.mps.is_available() and hasattr(torch, "mps"):
             torch.mps.empty_cache()
 
     def _move_transcoders_to_device(self, device: torch.device | str) -> None:
+        """Move any loaded transcoders to ``device`` if they are not already there."""
         if self._transcoders is None:
             return
         target = torch.device(device)
@@ -1009,11 +1124,18 @@ class BiologyAttributionRunner:
             self._empty_device_cache()
 
     def _ensure_transcoders_on_runner_device(self) -> None:
+        """Move loaded transcoders back onto the runner's active device before use."""
         if self._device is None or self._transcoders is None:
             return
         self._move_transcoders_to_device(self._device)
 
     def _offload_transcoders_after_forward(self) -> None:
+        """Move transcoders to CPU after the forward pass to free accelerator memory.
+
+        Only applies on non-CPU runners: the transcoders are only needed on the
+        accelerator during the forward pass that computes their features, not
+        during the subsequent backward-only attribution iterations.
+        """
         if self._transcoders is None:
             return
         if self._device is None or self._device.type == "cpu":
@@ -1023,6 +1145,12 @@ class BiologyAttributionRunner:
         memory_checkpoint("transcoders:offloaded after forward")
 
     def _ensure_loaded(self, *, include_transcoders: bool = True) -> None:
+        """Lazily load the model/tokenizer (and, if requested, the transcoders).
+
+        Idempotent: subsequent calls reuse whatever is already cached on
+        ``self``. Set ``include_transcoders=False`` to load only the model,
+        deferring the (memory-heavier) transcoder load until it is needed.
+        """
         memory_checkpoint(f"ensure_loaded:start include_transcoders={include_transcoders}")
         device, dtype = self._ensure_device_dtype()
         print(f"[INFO] device={device} dtype={dtype} layers={self.layers}")
@@ -1068,6 +1196,7 @@ class BiologyAttributionRunner:
         memory_checkpoint(f"ensure_loaded:end include_transcoders={include_transcoders}")
 
     def _loaded(self) -> tuple[Any, PreTrainedTokenizerBase, dict[int, SingleLayerTranscoder]]:
+        """Ensure the model, tokenizer, and transcoders are loaded and on-device; return all three."""
         self._ensure_loaded(include_transcoders=True)
         self._ensure_transcoders_on_runner_device()
         assert self._model is not None
@@ -1082,6 +1211,12 @@ class BiologyAttributionRunner:
         *,
         use_chat_template: bool = True,
     ) -> tuple[torch.Tensor, list[int], list[str]]:
+        """Tokenize ``prompt`` (optionally through the chat template) for attribution.
+
+        Returns ``(input_ids, input_token_ids, prompt_tokens)`` where
+        ``input_ids`` has a special token prepended at position 0 if needed
+        (see :func:`prepend_special_prefix`).
+        """
         if self._device is None:
             raise RuntimeError("runner device is not loaded")
         text = prompt
@@ -1119,7 +1254,17 @@ class BiologyAttributionRunner:
         save_pt: str | None = None,
         use_chat_template: bool = True,
     ) -> GraphResult:
-        """Generate and export a circuit-tracer-compatible graph JSON."""
+        """Run attribution on ``prompt`` and export a circuit-tracer-compatible graph JSON.
+
+        Loads the model/transcoders if needed, tokenizes the prompt, selects
+        logit targets, runs the custom iterative top-K attribution algorithm
+        (:mod:`llm_biology.attribution.tl_attribution`), applies Anthropic-style
+        node/edge pruning, projects each surviving feature through the
+        unembedding for a quick logit summary, attaches saved activation-window
+        examples, and writes the graph JSON (plus an optional ``.pt``
+        checkpoint via ``save_pt``) to ``graph_file_dir``. Returns the
+        in-memory :class:`GraphResult` alongside the file paths written.
+        """
 
         # Serialize heavy model/transcoder use so concurrent CLI/server callers
         # cannot accidentally create multiple Qwen copies on one GPU.

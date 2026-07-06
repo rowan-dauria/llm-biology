@@ -36,6 +36,7 @@ LOGGER = logging.getLogger("attribution_like_notebook")
 
 
 def setup_logging(log_file: Path, *, level: int = logging.DEBUG) -> None:
+    """Configure root logging to stream to stdout and mirror it to ``log_file``."""
     log_file.parent.mkdir(parents=True, exist_ok=True)
     handlers: list[logging.Handler] = [
         logging.StreamHandler(stream=sys.stdout),
@@ -54,6 +55,7 @@ def setup_logging(log_file: Path, *, level: int = logging.DEBUG) -> None:
 
 
 def set_seed(seed: int) -> None:
+    """Seed Python/NumPy/PyTorch RNGs and request deterministic CUDA algorithms."""
     import torch
 
     random.seed(seed)
@@ -67,6 +69,7 @@ def set_seed(seed: int) -> None:
 
 
 def log_environment() -> None:
+    """Log Python/platform/PyTorch/GPU details and relevant environment variables."""
     import torch
 
     LOGGER.info("Python executable: %s", sys.executable)
@@ -86,6 +89,7 @@ def log_environment() -> None:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for the CSD3 attribution run."""
     # Imported lazily so --help works even if heavy deps are missing.
     from llm_biology.attribution.attribution import (
         DEFAULT_EDGE_THRESHOLD,
@@ -174,6 +178,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """CLI entry point: run attribution for one prompt and save the graph + artifacts."""
     args = parse_args()
 
     use_chat_template = args.chat_template

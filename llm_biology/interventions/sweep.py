@@ -38,10 +38,12 @@ DEFAULT_MAGNITUDES = "-2,-1,0,0.5,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7,7.5,8"
 
 
 def finite_or_none(value: float) -> float | None:
+    """Return ``value`` unless it is NaN/inf, in which case return ``None`` (JSON-serialisable)."""
     return value if math.isfinite(value) else None
 
 
 def default_output_path(graph_path: Path, supernode_name: str) -> Path:
+    """Build a timestamped output path alongside the graph JSON when ``--output`` is omitted."""
     from llm_biology.attribution.attribution import slugify
 
     stamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
@@ -51,6 +53,7 @@ def default_output_path(graph_path: Path, supernode_name: str) -> Path:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for the supernode steering-magnitude sweep."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("graph_json", type=Path, help="Attribution graph JSON.")
     parser.add_argument("supernode", help="Exact qParams supernode label to steer.")
@@ -103,6 +106,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """CLI entry point: steer a graph supernode across a magnitude sweep and write a summary JSON."""
     setup_logging()
     args = parse_args()
 

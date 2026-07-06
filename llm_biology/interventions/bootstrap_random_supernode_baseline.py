@@ -156,6 +156,7 @@ def build_candidate_pool(
 
 
 def _magnitude_ok(cand_act: float, target_act: float, tol: float | None) -> bool:
+    """Check whether ``cand_act`` falls within a ``tol`` fractional band of ``target_act``."""
     if tol is None:
         return True
     if target_act <= 0:
@@ -521,6 +522,7 @@ def _empirical_p(targeted: float, samples: np.ndarray) -> float:
 
 
 def aggregate(targeted_value: float, samples: list[float]) -> dict[str, Any]:
+    """Summarize a baseline distribution (mean/std/percentiles/z-score/p-value) against ``targeted_value``."""
     arr = np.asarray(samples, dtype=float)
     arr = arr[np.isfinite(arr)]
     pct = np.percentile(arr, PERCENTILES) if arr.size else [float("nan")] * len(PERCENTILES)
@@ -541,6 +543,7 @@ def aggregate(targeted_value: float, samples: list[float]) -> dict[str, Any]:
 
 
 def default_output_path(graph_path: Path, supernode_name: str, tag: str | None = None) -> Path:
+    """Build a timestamped output path alongside the graph JSON when ``--output`` is omitted."""
     from llm_biology.attribution.attribution import slugify
 
     stamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
@@ -552,6 +555,7 @@ def default_output_path(graph_path: Path, supernode_name: str, tag: str | None =
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for the random size-matched baseline bootstrap."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("graph_json", type=Path, help="Attribution graph JSON.")
     parser.add_argument("supernode", help="Exact qParams supernode label to baseline.")
@@ -621,6 +625,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """CLI entry point: run the targeted supernode sweep plus its random-baseline bootstrap."""
     setup_logging()
     args = parse_args()
 
@@ -777,6 +782,7 @@ def main() -> None:
         draws_serialized = None
 
         def sweep(item: Any, tok: int | None) -> tuple[list[dict[str, float]], int, float]:
+            """Sweep one set of per-cell residual writes (targeted or a gaussian baseline draw)."""
             return run_one_sweep_writes(
                 model, transcoders, input_ids, item, magnitudes, layers, tok, target_pos
             )
@@ -804,6 +810,7 @@ def main() -> None:
         ]
 
         def sweep(item: Any, tok: int | None) -> tuple[list[dict[str, float]], int, float]:
+            """Sweep one feature set (targeted supernode or an other-feature baseline draw)."""
             return run_one_sweep(
                 model, transcoders, input_ids, item, magnitudes, layers, tok, target_pos
             )

@@ -40,10 +40,10 @@ def load_replacement_model(
     """
 
     kwargs: dict = {
-        # see https://transformer-circuits.pub/2021/framework/index.html#:~:text=Handling%20Layer%20Normalization
-        # these settings can be used to make the model more interpretable, but the we need to disable
-        # them because they would change the residual stream input to the transcoders, which would change the
-        # behaviour of the replacement model.
+        # See https://transformer-circuits.pub/2021/framework/index.html#:~:text=Handling%20Layer%20Normalization
+        # These settings can be used to make the model more interpretable, but we
+        # need to disable them here because they would change the residual stream
+        # input to the transcoders, altering the replacement model's behaviour.
         "fold_ln": False,
         "center_writing_weights": False,
         "center_unembed": False,

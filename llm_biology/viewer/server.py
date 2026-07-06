@@ -31,6 +31,8 @@ GZIP_MIN_BYTES = 1 << 20
 
 
 class BiologyApp:
+    """Application state for the viewer: where graphs, features, and static/frontend assets live."""
+
     def __init__(
         self,
         *,
@@ -44,9 +46,11 @@ class BiologyApp:
         self.graph_file_dir.mkdir(parents=True, exist_ok=True)
 
     def shutdown(self) -> None:
+        """No-op hook called by :meth:`Server.stop`; present for subclasses that hold resources."""
         return
 
     def upload_graph(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Validate, normalize, and save an uploaded graph JSON; return its slug and URL."""
         raw_graph = payload.get("graph")
         if not isinstance(raw_graph, dict):
             raise RequestError(400, "graph must be an object")
@@ -69,6 +73,8 @@ class BiologyApp:
 
 
 class RequestError(Exception):
+    """An HTTP error to return to the client, carrying its intended status code."""
+
     def __init__(self, status: int, message: str) -> None:
         super().__init__(message)
         self.status = status
@@ -76,11 +82,15 @@ class RequestError(Exception):
 
 
 class ReusableThreadingTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    """A ``TCPServer`` that handles each request on its own thread and allows quick address reuse."""
+
     allow_reuse_address = True
     daemon_threads = True
 
 
 class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
+    """Routes GET/HEAD/POST requests to graph, feature, and frontend-asset serving."""
+
     server: BiologyTCPServer
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -88,6 +98,7 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(server.app.static_dir), **kwargs)
 
     def log_message(self, format: str, *args: Any) -> None:
+        """Route the base handler's access log line through the module logger instead of stderr."""
         logger.info(
             "%s - - [%s] %s", self.address_string(), self.log_date_time_string(), format % args
         )
@@ -102,6 +113,7 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
         self._dispatch(send_body=True)
 
     def _dispatch(self, *, send_body: bool) -> None:
+        """Route the request through :meth:`_handle`, converting exceptions into JSON error responses."""
         try:
             self._handle(send_body=send_body)
         except RequestError as exc:
@@ -111,6 +123,7 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"error": "internal server error"}, status=500, send_body=send_body)
 
     def _handle(self, *, send_body: bool) -> None:
+        """Dispatch one request by method and path prefix; raises :class:`RequestError` on 404/etc."""
         parsed = urlparse(self.path)
         path = parsed.path
 
@@ -165,6 +178,7 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
         raise RequestError(404, "not found")
 
     def _read_json_body(self) -> dict[str, Any]:
+        """Read and parse the request body as a JSON object; ``{}`` if empty, else raises on invalid JSON."""
         content_length = int(self.headers.get("Content-Length", "0"))
         if content_length <= 0:
             return {}
@@ -177,6 +191,7 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
         return payload
 
     def _handle_save_graph(self, path: str, *, send_body: bool) -> None:
+        """Persist the UI's ``qParams`` (pinned nodes, supernodes, etc.) back onto a graph's JSON file."""
         slug = path.removeprefix("/save_graph/").strip("/")
         if not slug or "/" in slug:
             raise RequestError(400, "missing or invalid graph slug")
@@ -194,6 +209,7 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
         self._send_json({"ok": True}, send_body=send_body)
 
     def _serve_metadata(self, *, send_body: bool) -> None:
+        """Serve ``graph-metadata.json`` if it exists, else an empty graph list."""
         metadata_path = self.server.app.graph_file_dir / "graph-metadata.json"
         if metadata_path.exists():
             self._serve_file(
@@ -208,6 +224,7 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
     def _serve_file(
         self, root: Path, rel_path: str, *, send_body: bool, no_store: bool = False
     ) -> None:
+        """Serve a file under ``root``, gzip-compressing large JSON payloads."""
         path = safe_join(root, rel_path)
         if not path.exists() or not path.is_file():
             raise RequestError(404, "file not found")
@@ -230,6 +247,7 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
     def _send_json(
         self, payload: dict[str, Any], *, status: int = 200, send_body: bool = True
     ) -> None:
+        """Send ``payload`` as a JSON response with the given status code."""
         content = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -241,6 +259,8 @@ class BiologyRequestHandler(http.server.SimpleHTTPRequestHandler):
 
 
 class BiologyTCPServer(ReusableThreadingTCPServer):
+    """A threading TCP server that carries a reference to the shared :class:`BiologyApp` state."""
+
     def __init__(
         self, server_address: tuple[str, int], handler: type[BiologyRequestHandler], app: BiologyApp
     ):
@@ -249,6 +269,8 @@ class BiologyTCPServer(ReusableThreadingTCPServer):
 
 
 class Server:
+    """Handle for a running viewer server; stops it on demand or automatically at process exit."""
+
     def __init__(self, httpd: BiologyTCPServer, server_thread: threading.Thread) -> None:
         self.httpd = httpd
         self.server_thread = server_thread
@@ -256,6 +278,7 @@ class Server:
         atexit.register(self.stop)
 
     def stop(self) -> None:
+        """Shut down the app and HTTP server; idempotent, and safe to call from ``atexit``."""
         if self._stopped:
             return
         self._stopped = True
@@ -275,6 +298,7 @@ def serve(
     port: int = 8041,
     host: str = "",
 ) -> Server:
+    """Start the viewer's HTTP server on a background thread and return a handle to it."""
     app = BiologyApp(
         graph_file_dir=graph_file_dir,
         frontend_dir=frontend_dir,
@@ -290,6 +314,7 @@ def serve(
 
 
 def resolve_frontend_dir() -> Path:
+    """Locate the circuit-tracer frontend assets directory next to this project's checkout."""
     adjacent = PROJECT_ROOT.parent / "circuit-tracer" / "circuit_tracer" / "frontend" / "assets"
     if adjacent.exists():
         return adjacent.resolve()
@@ -300,6 +325,7 @@ def resolve_frontend_dir() -> Path:
 
 
 def safe_join(root: Path, rel_path: str) -> Path:
+    """Join and resolve ``rel_path`` under ``root``, raising 403 if it would escape ``root``."""
     root = root.resolve()
     path = (root / unquote(rel_path).lstrip("/")).resolve()
     if not path.is_relative_to(root):
@@ -308,6 +334,7 @@ def safe_join(root: Path, rel_path: str) -> Path:
 
 
 def slugify(text: str) -> str:
+    """Turn ``text`` into a filesystem-safe slug, falling back to a fixed default if empty."""
     slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", text.strip().lower()).strip("-")
     return slug or "uploaded-graph"
 
@@ -318,6 +345,7 @@ def upload_slug(
     slug_override: str | None,
     filename: str | None,
 ) -> str:
+    """Resolve the slug for an uploaded graph: explicit override, else metadata slug, else filename."""
     raw_slug = slug_override
     metadata = graph.get("metadata")
     if raw_slug is None and isinstance(metadata, dict):
@@ -335,6 +363,12 @@ def normalize_uploaded_graph(
     raw_graph: dict[str, Any],
     slug: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Validate an uploaded graph's required fields and stamp its resolved ``slug`` onto metadata.
+
+    Returns ``(graph, metadata)``. Raises :class:`RequestError` (400) if any
+    required field (``metadata``, ``prompt_tokens``, ``nodes``, ``links``) is
+    missing or malformed.
+    """
     graph: dict[str, Any] = copy.deepcopy(raw_graph)
 
     metadata = graph.get("metadata")
@@ -364,6 +398,7 @@ def normalize_uploaded_graph(
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Write ``payload`` as pretty-printed, UTF-8 JSON, creating parent directories as needed."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, ensure_ascii=False)
@@ -371,6 +406,7 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def optional_string(payload: dict[str, Any], key: str) -> str | None:
+    """Return ``payload[key]`` stripped, or ``None`` if absent/blank; raises if present but not a string."""
     value = payload.get(key)
     if value is None:
         return None
@@ -381,6 +417,7 @@ def optional_string(payload: dict[str, Any], key: str) -> str | None:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the CLI argument parser for the viewer server."""
     parser = argparse.ArgumentParser(description="Serve the llm-biology graph viewer.")
     parser.add_argument("--port", type=int, default=8041)
     parser.add_argument("--host", default="")
@@ -391,6 +428,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    """CLI entry point: start the viewer server and run until interrupted."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     args = build_arg_parser().parse_args(argv)
     server = serve(

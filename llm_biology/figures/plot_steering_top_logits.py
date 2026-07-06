@@ -43,6 +43,7 @@ HOUSTON_COLOUR = "#555555"  # dark grey, distinct from the light "other"/palette
 
 
 def load_sweep(path: Path) -> dict[str, Any]:
+    """Load a supernode sweep JSON (as written by ``sweep_supernode_interventions.py``)."""
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
 
@@ -71,6 +72,7 @@ def build_series(
 
 
 def main() -> None:
+    """CLI entry point: plot the stacked top-token redistribution across a steering sweep."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "sweep_json", type=Path, help="sweep_supernode_interventions.py output JSON"
@@ -109,6 +111,7 @@ def main() -> None:
             token_colour[tok] = next(colour_cycle, None)
 
     def disp(tok: str) -> str:
+        """Render a raw token string as a capitalised display label for the legend."""
         if tok in TOKEN_DISPLAY:
             return TOKEN_DISPLAY[tok]
         stripped = tok.strip()
@@ -151,7 +154,9 @@ def main() -> None:
     ax_top.axvline(1.0, color="red", lw=1, ls="-", zorder=10)
     ax_top.axvline(0.0, color="red", lw=1, ls=":", zorder=10)
     ax_top.margins(x=0)
-    ax_top.text(1.0, 1.005, "Clean", ha="left", va="bottom", fontsize=label_fontsize, color="0.3")
+    ax_top.text(
+        1.0, 1.005, "Unsteered", ha="left", va="bottom", fontsize=label_fontsize, color="0.3"
+    )
     ax_top.text(0.0, 1.005, "Ablate", ha="right", va="bottom", fontsize=label_fontsize, color="0.3")
 
     fig.tight_layout()

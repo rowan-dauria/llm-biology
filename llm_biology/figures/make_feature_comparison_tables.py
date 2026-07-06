@@ -10,7 +10,7 @@ values remain generated from the CSV source of truth.
 Command used for the report tables:
 
     llm-biology/venv/bin/python3 \
-        python -m llm_biology.figures.make_feature_comparison_tables \
+        -m llm_biology.figures.make_feature_comparison_tables \
         llm-biology/data/base_jailbreak_comparison/2026-07-01-20-56-31__base_to_jailbroken__vs-qwen3-4b-heretic-trial114-merged.csv \
         llm-biology/data/base_jailbreak_comparison/2026-07-01-20-57-21__jailbroken_to_base__vs-qwen3-4b.csv \
         --output-dir report/tables
@@ -33,6 +33,8 @@ OUTCOME_LABELS = {
 
 @dataclass(frozen=True)
 class FeatureRow:
+    """One row of the cross-model feature-comparison CSV, parsed into typed fields."""
+
     direction: str
     node_id: str
     feature_id: str
@@ -47,6 +49,7 @@ class FeatureRow:
 
 
 def latex_text(value: str) -> str:
+    """Escape LaTeX special characters in ``value`` and normalise straight double quotes."""
     replacements = {
         "\\": r"\textbackslash{}",
         "&": r"\&",
@@ -64,6 +67,7 @@ def latex_text(value: str) -> str:
 
 
 def latex_label(value: str) -> str:
+    """Escape ``value`` for LaTeX, converting straight double quotes pairwise to ``` `` ''``` pairs."""
     # Convert straight double quotes pairwise to LaTeX opening/closing quotes.
     parts = value.split('"')
     if len(parts) == 1:
@@ -77,10 +81,12 @@ def latex_label(value: str) -> str:
 
 
 def latex_texttt(value: str) -> str:
+    """Wrap an escaped value in LaTeX ``\\texttt{}``."""
     return r"\texttt{" + latex_text(value) + "}"
 
 
 def token_display(token: str) -> str:
+    """Render a raw token string as monospace LaTeX, special-casing newline tokens."""
     if token == "\n":
         return latex_texttt(r"\n")
     if token == "\n\n":
@@ -90,12 +96,14 @@ def token_display(token: str) -> str:
 
 
 def fmt_number(value: float) -> str:
+    """Format a float to 2dp, rounding near-zero values down to a bare ``"0"``."""
     if abs(value) < 0.005:
         return "0"
     return f"{value:.2f}"
 
 
 def feature_id_from_node(node_id: str) -> str:
+    """Extract the feature index from a ``"<layer>_<feature>_<pos>"`` node id."""
     parts = node_id.split("_")
     if len(parts) >= 2:
         return parts[1]
@@ -103,6 +111,7 @@ def feature_id_from_node(node_id: str) -> str:
 
 
 def load_rows(path: Path) -> list[FeatureRow]:
+    """Load a cross-model feature-comparison CSV into a list of :class:`FeatureRow`."""
     with path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     return [
@@ -124,6 +133,7 @@ def load_rows(path: Path) -> list[FeatureRow]:
 
 
 def model_activations(row: FeatureRow) -> tuple[float, float]:
+    """Return ``(base_model_activation, jailbroken_model_activation)`` regardless of ``row.direction``."""
     if row.direction == "base_to_jailbroken":
         return row.source_activation, row.comparison_activation
     if row.direction == "jailbroken_to_base":
@@ -132,11 +142,13 @@ def model_activations(row: FeatureRow) -> tuple[float, float]:
 
 
 def sorted_rows(rows: list[FeatureRow]) -> list[FeatureRow]:
+    """Sort rows by outcome group (per ``OUTCOME_ORDER``), then by descending source activation."""
     outcome_rank = {outcome: rank for rank, outcome in enumerate(OUTCOME_ORDER)}
     return sorted(rows, key=lambda row: (outcome_rank[row.outcome], -row.source_activation))
 
 
 def row_to_latex(row: FeatureRow) -> str:
+    """Render one :class:`FeatureRow` as a LaTeX tabular row."""
     base_activation, ablit_activation = model_activations(row)
     columns = [
         latex_label(row.label),
@@ -153,6 +165,7 @@ def row_to_latex(row: FeatureRow) -> str:
 
 
 def fragment(rows: list[FeatureRow]) -> str:
+    """Render sorted rows as a LaTeX table body, with a ``\\midrule`` between outcome groups."""
     lines: list[str] = []
     current_outcome: str | None = None
     for row in sorted_rows(rows):
@@ -165,6 +178,7 @@ def fragment(rows: list[FeatureRow]) -> str:
 
 
 def output_name(rows: list[FeatureRow]) -> str:
+    """Derive the output ``.tex`` filename from the CSV's (single, uniform) comparison direction."""
     directions = {row.direction for row in rows}
     if len(directions) != 1:
         raise ValueError(f"expected one direction per CSV, got {sorted(directions)}")
@@ -177,6 +191,7 @@ def output_name(rows: list[FeatureRow]) -> str:
 
 
 def main() -> None:
+    """CLI entry point: convert both comparison CSVs into LaTeX table-body fragments."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("base_to_jailbroken_csv", type=Path)
     parser.add_argument("jailbroken_to_base_csv", type=Path)

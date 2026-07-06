@@ -42,11 +42,13 @@ EPS = 1e-9
 
 
 def odds(prob: float) -> float:
+    """Convert a probability to odds, clamping away from 0/1 to avoid division by zero."""
     p = min(max(prob, EPS), 1.0 - EPS)
     return p / (1.0 - p)
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for the steerable-ceiling diagnostic."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("graph_json", type=Path, help="Attribution graph JSON.")
     parser.add_argument("supernode", help="Exact qParams supernode label.")
@@ -79,6 +81,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def default_output_path(graph_path: Path, supernode_name: str) -> Path:
+    """Build a timestamped output path alongside the graph JSON when ``--output`` is omitted."""
     from llm_biology.attribution.attribution import slugify
 
     stamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
@@ -87,6 +90,7 @@ def default_output_path(graph_path: Path, supernode_name: str) -> Path:
 
 
 def main() -> None:
+    """CLI entry point: run the steerable-ceiling diagnostic and write a verdict JSON."""
     sweep.setup_logging()
     args = parse_args()
 
@@ -215,6 +219,7 @@ def main() -> None:
 
     # --- #2 ablations on the same replacement model ---
     def ablation_prob_logit(result) -> tuple[float, float]:
+        """Read the target token's (probability, logit) from an intervention result at ``tpos``."""
         logits = result.intervened_logits[tpos]
         prob = float(sweep.tensor_probs(logits)[target_token_id].item())
         return prob, float(logits[target_token_id].item())
@@ -259,6 +264,7 @@ def main() -> None:
     verification_residual = background_logit - contrib.const  # ~0 confirms the read-off
 
     def share(numer: float, denom: float) -> float | None:
+        """Safe ``numer / denom``, returning ``None`` when ``denom`` is too close to zero."""
         return numer / denom if abs(denom) > EPS else None
 
     supernode_mass_share = share(supernode_mass, contrib.total_mass_all)

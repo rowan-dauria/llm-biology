@@ -13,7 +13,7 @@ chips remain legible in report-scale PDF output.
 Command used for the report figure:
 
     llm-biology/venv/bin/python3 \
-        python -m llm_biology.figures.plot_cross_model_feature_fate \
+        -m llm_biology.figures.plot_cross_model_feature_fate \
         llm-biology/data/base_jailbreak_comparison/2026-07-01-20-56-31__base_to_jailbroken__vs-qwen3-4b-heretic-trial114-merged.csv \
         llm-biology/data/base_jailbreak_comparison/2026-07-01-20-57-21__jailbroken_to_base__vs-qwen3-4b.csv \
         --output-pdf report/figures/feature_fate_map.pdf \
@@ -94,6 +94,8 @@ OUTCOME_STYLES = {
 
 @dataclass(frozen=True)
 class Feature:
+    """One pinned feature's cross-model re-measurement, as one CSV row plus its rendered chip text."""
+
     layer: int
     pos: int
     label: str
@@ -126,6 +128,7 @@ def wrapped_label(label: str, *, pos: int) -> str:
 
 
 def chip_text(row: dict[str, str]) -> str:
+    """Render one CSV row's label plus its outcome-appropriate activation annotation."""
     pos = int(row["pos"])
     label = wrapped_label(row["label"], pos=pos)
     outcome = row["outcome"]
@@ -144,6 +147,7 @@ def chip_text(row: dict[str, str]) -> str:
 
 
 def load_features(path: Path) -> list[Feature]:
+    """Load a cross-model feature-fate CSV into a list of :class:`Feature`."""
     with path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
 
@@ -166,6 +170,7 @@ def load_features(path: Path) -> list[Feature]:
 
 
 def position_tokens(feature_sets: list[list[Feature]]) -> dict[int, str]:
+    """Map each token position to its (first-seen) comparison token, across both panels."""
     tokens: dict[int, str] = {}
     for features in feature_sets:
         for feature in features:
@@ -174,6 +179,7 @@ def position_tokens(feature_sets: list[list[Feature]]) -> dict[int, str]:
 
 
 def column_widths(positions: list[int], feature_sets: list[list[Feature]]) -> dict[int, float]:
+    """Compute a content-driven column width per token position from its longest chip line."""
     max_chars = dict.fromkeys(positions, 8)
     for features in feature_sets:
         for feature in features:
@@ -189,6 +195,7 @@ def column_widths(positions: list[int], feature_sets: list[list[Feature]]) -> di
 
 
 def grouped_by_cell(features: list[Feature]) -> dict[tuple[int, int], list[Feature]]:
+    """Group features by ``(layer, pos)`` cell, each group sorted by descending source activation."""
     grouped: dict[tuple[int, int], list[Feature]] = defaultdict(list)
     for feature in features:
         grouped[(feature.layer, feature.pos)].append(feature)
@@ -208,6 +215,7 @@ def draw_panel(
     layer_heights: dict[int, float],
     title: str,
 ) -> None:
+    """Draw one feature-fate panel: a (layer × token position) grid of outcome-coloured chips."""
     edges = [0.0]
     for pos in positions:
         width = column_width_overrides.get(pos, widths[pos])
@@ -281,6 +289,7 @@ def draw_panel(
 def build_figure(
     base_to_jailbroken: list[Feature], jailbroken_to_base: list[Feature]
 ) -> plt.Figure:
+    """Build the two-panel feature-fate figure with a shared legend."""
     feature_sets = [base_to_jailbroken, jailbroken_to_base]
     positions = sorted({feature.pos for features in feature_sets for feature in features})
     tokens = position_tokens(feature_sets)
@@ -330,6 +339,7 @@ def build_figure(
 
 
 def main() -> None:
+    """CLI entry point: build the feature-fate figure and save it as PDF and PNG."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "base_to_jailbroken_csv",

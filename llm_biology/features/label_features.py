@@ -77,21 +77,26 @@ _TRIGGER_RE = re.compile(r"<<(.*?)>>", re.DOTALL)
 
 @dataclass(slots=True)
 class LabelOutcome:
+    """Result of labelling one feature: either a validated ``record`` or an ``error``."""
+
     summary: FeatureSummary
     record: dict[str, Any] | None
     error: str | None = None
 
 
 def _output_path(layer: int) -> Path:
+    """Return the ``layer_<L>.jsonl`` label-store path for ``layer``."""
     return DEFAULT_DIR / f"layer_{layer}.jsonl"
 
 
 def _load_topk(layer: int, topk_dir: Path) -> dict[str, Any]:
+    """Load the saved top-K windows blob for ``layer``."""
     topk_path = topk_dir / f"topk_layer_{layer}.pt"
     return torch.load(topk_path, weights_only=False)
 
 
 def _read_existing_features(path: Path) -> set[int]:
+    """Return the set of feature indices already labelled in ``path``, if it exists."""
     if not path.exists():
         return set()
 
@@ -107,6 +112,7 @@ def _read_existing_features(path: Path) -> set[int]:
 
 
 def _build_user_prompt(layer: int, summary: FeatureSummary, windows: list[Window]) -> str:
+    """Render the MAX_ACTIVATING_TOKENS / TOP_ACTIVATING_TEXTS user prompt for one feature."""
     active_windows = [window for window in windows if window.active]
     max_tokens = []
     top_texts = []
@@ -130,6 +136,7 @@ def _build_user_prompt(layer: int, summary: FeatureSummary, windows: list[Window
 
 
 def _validate_response(text: str) -> dict[str, str]:
+    """Parse and validate a labeller response, enforcing the short label/one-sentence rationale contract."""
     payload = json.loads(text)
     if not isinstance(payload, dict):
         raise TypeError("Response was not a JSON object")
@@ -157,11 +164,13 @@ _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
 def _extract_json_block(text: str) -> str:
+    """Extract the first ``{...}`` block from ``text``, or return it unchanged if none is found."""
     match = _JSON_BLOCK_RE.search(text)
     return match.group(0) if match else text
 
 
 def _load_transformers(model_id: str) -> dict[str, Any]:
+    """Load and cache a local transformers labeller model/tokenizer, keyed by ``model_id``."""
     if _TRANSFORMERS_STATE.get("model_id") == model_id:
         return _TRANSFORMERS_STATE
 
@@ -198,6 +207,7 @@ def _load_transformers(model_id: str) -> dict[str, Any]:
 
 
 def _build_chat_text(tokenizer: Any, system_prompt: str, user_prompt: str) -> str:
+    """Render system/user messages through the tokenizer's chat template."""
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
@@ -211,6 +221,7 @@ def _build_chat_text(tokenizer: Any, system_prompt: str, user_prompt: str) -> st
 
 
 def _generate_batch(state: dict[str, Any], prompts: list[str]) -> list[str]:
+    """Greedily generate a completion for each of ``prompts`` on the local transformers model."""
     tokenizer = state["tokenizer"]
     model = state["model"]
     device = state["device"]
@@ -234,6 +245,7 @@ def _build_record(
     payload: dict[str, str],
     source_tag: str | None,
 ) -> dict[str, Any]:
+    """Assemble a JSONL-ready label record from a summary and a validated model payload."""
     record: dict[str, Any] = {
         "layer": layer,
         "feature": summary.feature,
@@ -256,6 +268,12 @@ def _run_transformers_labels(
     *,
     source_tag: str | None = None,
 ) -> None:
+    """Label ``payloads`` with a local transformers model, appending records to ``output_path``.
+
+    Retries a batch member individually with a "reply with valid JSON only"
+    reminder if its response fails validation the first time. Raises after
+    all payloads are processed if any ultimately failed.
+    """
     from tqdm import tqdm  # type: ignore
 
     state = _load_transformers(model_id)
@@ -306,6 +324,7 @@ async def _anthropic_complete(
     *,
     api_key: str,
 ) -> str:
+    """Complete one labelling request via the Anthropic Messages API."""
     try:
         from anthropic import AsyncAnthropic
     except ImportError as exc:  # pragma: no cover - depends on runtime env
@@ -343,6 +362,7 @@ async def _openai_complete(
     *,
     api_key: str,
 ) -> str:
+    """Complete one labelling request via the OpenAI chat completions API."""
     try:
         from openai import AsyncOpenAI
     except ImportError as exc:  # pragma: no cover - depends on runtime env
@@ -366,6 +386,7 @@ async def _openai_complete(
 
 
 def _post_ollama_chat(host: str, payload: dict[str, Any]) -> str:
+    """POST a chat request to a local Ollama server and return the message content."""
     url = f"{host.rstrip('/')}/api/chat"
     request = urllib.request.Request(
         url,
@@ -399,6 +420,7 @@ async def _ollama_complete(
     *,
     host: str,
 ) -> str:
+    """Complete one labelling request via a local Ollama chat model, run off the event loop."""
     payload: dict[str, Any] = {
         "model": model,
         "messages": [
@@ -425,6 +447,7 @@ async def _call_model(
     api_key: str | None,
     ollama_host: str,
 ) -> str:
+    """Dispatch one labelling request to the configured ``provider``."""
     if provider == "anthropic":
         if api_key is None:
             raise RuntimeError("ANTHROPIC_API_KEY is not set")
@@ -446,6 +469,7 @@ async def _label_one(
     user_prompt: str,
     ollama_host: str,
 ) -> LabelOutcome:
+    """Label one feature via an API/local-server provider, retrying once with a JSON-only reminder."""
     reminder = "\n\nReply with valid JSON only."
     for attempt in range(2):
         prompt = user_prompt if attempt == 0 else f"{user_prompt}{reminder}"
@@ -479,6 +503,7 @@ async def _run_api_labels(
     *,
     source_tag: str | None = None,
 ) -> None:
+    """Label ``payloads`` concurrently via an API provider, appending records to ``output_path``."""
     semaphore = asyncio.Semaphore(concurrency)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     failures: list[str] = []
@@ -521,6 +546,7 @@ def _build_payloads(
     tokenizer: Any,
     corpus_spec: str,
 ) -> list[tuple[FeatureSummary, str]]:
+    """Build one (summary, rendered user prompt) pair per feature summary."""
     needed_prompt_ids: set[int] = set()
     for summary in summaries:
         needed_prompt_ids.update(summary.active_prompt_ids)
@@ -542,6 +568,7 @@ def _build_payloads(
 
 
 def _print_dry_run(layer: int, payloads: list[tuple[FeatureSummary, str]]) -> None:
+    """Print the system prompt and each feature's user prompt without calling any model."""
     print(SYSTEM_PROMPT)
     for summary, user_prompt in payloads:
         print()
@@ -550,6 +577,7 @@ def _print_dry_run(layer: int, payloads: list[tuple[FeatureSummary, str]]) -> No
 
 
 async def _async_main(args: argparse.Namespace) -> None:
+    """Async body of the CLI: select, filter, and label a layer's top-K-ranked features."""
     layer_data = _load_topk(args.layer, args.topk_dir)
     summaries = select_features(
         layer_data,
@@ -623,6 +651,7 @@ async def _async_main(args: argparse.Namespace) -> None:
 
 
 def _count_lines(path: Path) -> int:
+    """Count non-blank lines in ``path``, or 0 if it doesn't exist."""
     if not path.exists():
         return 0
     count = 0
@@ -634,6 +663,7 @@ def _count_lines(path: Path) -> int:
 
 
 def _summary_for_feature(layer_data: dict[str, Any], feature: int) -> FeatureSummary | None:
+    """Build a :class:`FeatureSummary` for one explicit feature, or ``None`` if it never fired."""
     active = active_prompt_ids(layer_data, feature)
     if not active:
         return None
@@ -770,6 +800,7 @@ def label_features_subset(
 
 
 def main() -> None:
+    """CLI entry point: label a layer's top-K-ranked features and append them to the label store."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--layer", type=int, required=True)
     parser.add_argument(

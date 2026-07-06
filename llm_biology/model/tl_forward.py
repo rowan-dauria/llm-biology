@@ -109,6 +109,7 @@ class ReplacementMLP(nn.Module):
 
 
 def _has_replacement_hooks(mlp: nn.Module) -> bool:
+    """Return whether ``mlp`` is already a :class:`ReplacementMLP` or equivalent."""
     return isinstance(mlp, ReplacementMLP) or (
         isinstance(getattr(mlp, "hook_in", None), HookPoint)
         and isinstance(getattr(mlp, "hook_out", None), HookPoint)
@@ -169,6 +170,7 @@ def finalize_active_features(state: HookState) -> list[ActiveFeature]:
 
 
 def _zero_positions_(acts: torch.Tensor, zero_positions: slice | None) -> torch.Tensor:
+    """Zero ``acts`` in-place along the position dimension for ``zero_positions`` (e.g. BOS/prefix)."""
     if zero_positions is not None:
         if acts.dim() == 3:
             acts[:, zero_positions, :] = 0
@@ -180,6 +182,7 @@ def _zero_positions_(acts: torch.Tensor, zero_positions: slice | None) -> torch.
 
 
 def _make_mlp_in_hook(layer: int, state: HookState):
+    """Build the ``blocks.{layer}.mlp.hook_in`` hook: encode + cache this layer's features."""
     # Retrieve the transcoder for the current layer from the state
     transcoder = state.transcoders[layer]
 
@@ -207,6 +210,13 @@ def _make_mlp_in_hook(layer: int, state: HookState):
 
 
 def _make_mlp_out_hook(layer: int, state: HookState):
+    """Build the ``blocks.{layer}.hook_mlp_out`` hook: substitute the transcoder reconstruction.
+
+    Decodes this layer's cached features back into an MLP-output-shaped tensor,
+    records the reconstruction error, and returns a value that is numerically
+    identical to the original MLP output (the "ghost-skip" trick, see inline
+    comments below) while routing gradients through the linear replacement path.
+    """
     transcoder = state.transcoders[layer]
 
     def hook(acts: torch.Tensor, hook: HookPoint) -> torch.Tensor:  # noqa: ARG001
@@ -247,6 +257,8 @@ def _make_mlp_out_hook(layer: int, state: HookState):
 
 
 def _make_embed_hook(state: HookState):
+    """Build the ``hook_embed`` hook: cache the embedding tensor and its gradient."""
+
     def hook(acts: torch.Tensor, hook: HookPoint) -> torch.Tensor:  # noqa: ARG001
         # `install_freezes` already set requires_grad on acts via its permanent
         # hook; make sure of it in case freezes weren't installed.
@@ -266,6 +278,8 @@ def _make_embed_hook(state: HookState):
 
 
 def _make_final_hidden_hook(state: HookState):
+    """Build the ``unembed.hook_in`` hook: cache the post-final-norm residual stream."""
+
     def hook(acts: torch.Tensor, hook: HookPoint) -> torch.Tensor:  # noqa: ARG001
         state.final_hidden = acts
         return acts

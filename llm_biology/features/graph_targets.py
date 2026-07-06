@@ -33,6 +33,8 @@ TRANSCODER_FEATURE_TYPE = "cross layer transcoder"
 
 @dataclass(frozen=True, slots=True)
 class GraphTarget:
+    """An unlabelled ``(layer, feature)`` candidate ranked for labelling."""
+
     layer: int
     feature: int
     target_effect: float
@@ -113,6 +115,7 @@ def compute_centrality(
 
 
 def _minmax(values: list[float]) -> list[float]:
+    """Min-max normalise ``values`` to ``[0, 1]``; an all-equal input maps to all zeros."""
     if not values:
         return []
     lo = min(values)
@@ -203,6 +206,7 @@ def select_unlabeled_targets(
 
 
 def _write_jsonl(path: Path, targets: list[GraphTarget]) -> None:
+    """Write ``targets`` as one JSON record per line."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for target in targets:
@@ -210,6 +214,7 @@ def _write_jsonl(path: Path, targets: list[GraphTarget]) -> None:
 
 
 def main() -> None:
+    """CLI entry point: rank unlabelled targets in a graph JSON and print or save them."""
     parser = argparse.ArgumentParser(
         description="Rank unlabelled (layer, feature) nodes in an attribution graph.",
     )

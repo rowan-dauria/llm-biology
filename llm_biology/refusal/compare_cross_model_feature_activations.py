@@ -60,6 +60,8 @@ FeatureKey = tuple[int, int, int]  # (layer, pos, feature)
 
 @dataclass(slots=True)
 class PanelRow:
+    """One parsed row of the human-curated feature panel, with its resolved feature key."""
+
     index: int
     key: FeatureKey
     node_id: str
@@ -76,6 +78,8 @@ class PanelRow:
 
 @dataclass(slots=True)
 class ModelMeasurement:
+    """Per-prompt measured feature activations and token metadata from one model."""
+
     activations: dict[tuple[str, FeatureKey], float]
     tokens_by_prompt_id: dict[str, list[str]]
     prompt_lengths: dict[str, int]
@@ -83,6 +87,7 @@ class ModelMeasurement:
 
 
 def setup_logging() -> None:
+    """Configure root logging to stream INFO-and-above to stdout with timestamps."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-8s %(name)s | %(message)s",
@@ -93,6 +98,7 @@ def setup_logging() -> None:
 
 
 def parse_feature_node_id(node_id: str) -> FeatureKey:
+    """Parse a frontend feature node id (``"<layer>_<feature>_<pos>"``) into ``(layer, pos, feature)``."""
     parts = node_id.split("_")
     if len(parts) != 3 or parts[0] == "E":
         raise ValueError(f"not a frontend feature node id: {node_id!r}")
@@ -103,11 +109,13 @@ def parse_feature_node_id(node_id: str) -> FeatureKey:
 
 
 def feature_node_id(key: FeatureKey) -> str:
+    """Build the frontend feature node id (``"<layer>_<feature>_<pos>"``) from a ``FeatureKey``."""
     layer, pos, feature = key
     return f"{layer}_{feature}_{pos}"
 
 
 def as_float(value: Any) -> float | None:
+    """Parse ``value`` as a float, returning ``None`` for blanks, non-numeric, or non-finite values."""
     if value is None or value == "":
         return None
     try:
@@ -118,12 +126,14 @@ def as_float(value: Any) -> float | None:
 
 
 def as_int(value: Any, *, name: str) -> int:
+    """Parse ``value`` as a required int field, raising ``ValueError`` naming ``name`` if missing."""
     if value is None or value == "":
         raise ValueError(f"missing required integer field {name!r}")
     return int(value)
 
 
 def first_present(row: dict[str, Any], names: tuple[str, ...]) -> Any:
+    """Return the first non-empty value among ``row[name]`` for ``name`` in ``names``, else ``None``."""
     for name in names:
         if name in row and row[name] not in (None, ""):
             return row[name]
@@ -131,6 +141,7 @@ def first_present(row: dict[str, Any], names: tuple[str, ...]) -> Any:
 
 
 def row_key(row: dict[str, Any]) -> tuple[FeatureKey, str]:
+    """Resolve a panel row's ``(FeatureKey, node_id)`` from its ``node_id`` or separate layer/pos/feature fields."""
     node_id = first_present(row, ("node_id", "node", "id"))
     if isinstance(node_id, str) and node_id:
         key = parse_feature_node_id(node_id)
@@ -149,6 +160,12 @@ def row_key(row: dict[str, Any]) -> tuple[FeatureKey, str]:
 def read_panel(
     path: Path, *, cli_prompt: str | None, cli_direction: str | None
 ) -> tuple[dict[str, Any], list[PanelRow]]:
+    """Load a feature panel (JSON or CSV) into ``(metadata, rows)``.
+
+    Accepts a bare list of rows or an object with ``metadata``/``features``
+    (or ``rows``/``items``/``panel``) keys. CLI-supplied prompt/direction
+    fill in for rows or metadata that omit them.
+    """
     if path.suffix.lower() == ".csv":
         with path.open("r", encoding="utf-8", newline="") as handle:
             payload: Any = list(csv.DictReader(handle))
@@ -220,6 +237,7 @@ def read_panel(
 
 
 def prompt_format_from_args(raw: str, metadata: dict[str, Any]) -> str:
+    """Resolve ``--prompt-format``: explicit value wins, else infer from panel metadata, else ``"chat"``."""
     if raw != "auto":
         return raw
     panel_format = metadata.get("prompt_format")
@@ -234,6 +252,7 @@ def prompt_format_from_args(raw: str, metadata: dict[str, Any]) -> str:
 def tokenize_prompt(
     tokenizer: Any, prompt: str, *, prompt_format: str, device: Any
 ) -> tuple[Any, list[str]]:
+    """Tokenize ``prompt`` (optionally through the chat template) and return ``(input_ids, tokens)``."""
     from llm_biology.attribution.attribution import prepend_special_prefix
 
     text = prompt
@@ -253,6 +272,7 @@ def tokenize_prompt(
 
 
 def rows_by_prompt(rows: list[PanelRow]) -> dict[str, list[PanelRow]]:
+    """Group panel rows by ``prompt_id`` so each prompt is tokenised/measured only once."""
     grouped: dict[str, list[PanelRow]] = {}
     for row in rows:
         grouped.setdefault(row.prompt_id, []).append(row)
@@ -268,6 +288,12 @@ def measure_model(
     tl_model_id: str | None = None,
     tokenizer_id: str | None = None,
 ) -> ModelMeasurement:
+    """Load one model + transcoders, measure every panel row's feature activation, then release it.
+
+    Runs one clean :func:`~llm_biology.interventions.tl_intervention.run_feature_intervention`
+    per distinct prompt (grouping rows by ``prompt_id``), then frees the model,
+    transcoders, and tokenizer and clears the accelerator cache before returning.
+    """
     import torch
     from transformers import AutoTokenizer
 
@@ -358,6 +384,12 @@ def measure_model(
 
 
 def token_status(row: PanelRow, tokens: list[str] | None) -> tuple[str, str | None]:
+    """Check a row's recorded prompt token against the actually-tokenized text at that position.
+
+    Returns ``(status, measured_token)`` where ``status`` is one of
+    ``not_measured``, ``position_out_of_range``, ``token_mismatch``, ``ok``,
+    or ``unchecked`` (no ``prompt_token`` was recorded to compare against).
+    """
     if tokens is None:
         return "not_measured", None
     _layer, pos, _feature = row.key
@@ -380,6 +412,12 @@ def classify(
     absent_ratio_threshold: float,
     reduced_ratio_threshold: float,
 ) -> str:
+    """Classify one feature's cross-model fate from its source/comparison activations and token checks.
+
+    Returns one of ``missing_measurement``, ``ambiguous_token_mismatch``,
+    ``source_activation_missing``, ``weak_source``, ``absent``, ``reduced``,
+    or ``shared_active``, in that precedence order.
+    """
     if comparison_activation is None:
         return "missing_measurement"
     mismatch_statuses = {"position_out_of_range", "token_mismatch"}
@@ -399,6 +437,7 @@ def classify(
 
 
 def finite_ratio(num: float | None, den: float | None) -> float | None:
+    """Return ``|num| / |den|``, or ``None`` if either input is missing, zero, or non-finite."""
     if num is None or den is None or den == 0:
         return None
     out = abs(num) / abs(den)
@@ -406,6 +445,7 @@ def finite_ratio(num: float | None, den: float | None) -> float | None:
 
 
 def default_output_base(*, output_dir: Path, direction: str, comparison_model_id: str) -> Path:
+    """Build a timestamped output path stem when ``--output-base`` is omitted."""
     from llm_biology.attribution.attribution import slugify
 
     stamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
@@ -415,6 +455,7 @@ def default_output_base(*, output_dir: Path, direction: str, comparison_model_id
 
 
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Write the classified comparison rows to CSV with a fixed column order."""
     fieldnames = [
         "direction",
         "prompt_id",
@@ -446,6 +487,7 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for the cross-model feature-activation comparison."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("feature_panel", type=Path, help="Human-curated JSON/CSV feature panel.")
     parser.add_argument(
@@ -524,6 +566,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """CLI entry point: measure a curated feature panel in a comparison model and classify outcomes."""
     setup_logging()
     args = parse_args()
 

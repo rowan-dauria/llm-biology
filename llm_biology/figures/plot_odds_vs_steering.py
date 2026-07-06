@@ -43,6 +43,7 @@ EPS = 1e-9
 
 
 def to_metric(prob: np.ndarray | float, metric: str) -> np.ndarray:
+    """Convert probability to the plotted metric: odds ``p/(1-p)`` (clamped) or clipped probability."""
     prob = np.asarray(prob, dtype=float)
     if metric == "odds":
         prob = np.clip(prob, EPS, 1.0 - EPS)
@@ -51,10 +52,12 @@ def to_metric(prob: np.ndarray | float, metric: str) -> np.ndarray:
 
 
 def load(path: Path) -> dict:
+    """Load a JSON file as a plain dict."""
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def main() -> None:
+    """CLI entry point: plot the targeted steering curve against its random-baseline null band."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("baseline_json", type=Path, help="…__baseline-bootstrap__….json")
     parser.add_argument("sweep_json", type=Path, help="…__intervention-sweep__….json")

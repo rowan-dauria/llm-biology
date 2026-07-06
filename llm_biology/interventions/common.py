@@ -10,6 +10,7 @@ from typing import Any
 
 
 def parse_csv_floats(raw: str) -> list[float]:
+    """Parse a comma-separated string of floats (e.g. steering magnitudes) into a list."""
     values = [float(item.strip()) for item in raw.split(",") if item.strip()]
     if not values:
         raise ValueError("expected at least one comma-separated magnitude")
@@ -17,6 +18,7 @@ def parse_csv_floats(raw: str) -> list[float]:
 
 
 def parse_csv_ints(raw: str) -> list[int]:
+    """Parse a comma-separated string of ints (e.g. layer indices) into a list."""
     values = [int(item.strip()) for item in raw.split(",") if item.strip()]
     if not values:
         raise ValueError("expected at least one comma-separated layer")
@@ -24,6 +26,7 @@ def parse_csv_ints(raw: str) -> list[int]:
 
 
 def parse_feature_node_id(node_id: str) -> tuple[int, int, int]:
+    """Parse a graph feature node id (``"<layer>_<feature>_<pos>"``) into ``(layer, feature, pos)``."""
     parts = node_id.split("_")
     if len(parts) != 3 or parts[0] == "E":
         raise ValueError(f"not a feature node id: {node_id!r}")
@@ -34,6 +37,7 @@ def parse_feature_node_id(node_id: str) -> tuple[int, int, int]:
 
 
 def load_graph(path: Path) -> dict[str, Any]:
+    """Load a circuit-tracer-format graph JSON from ``path``."""
     with path.open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
     if not isinstance(payload, dict):
@@ -42,6 +46,7 @@ def load_graph(path: Path) -> dict[str, Any]:
 
 
 def normalized_supernodes(qparams: dict[str, Any]) -> list[list[str]]:
+    """Normalize the graph's ``qParams.supernodes`` UI state into ``[label, *node_ids]`` groups."""
     raw = qparams.get("supernodes", [])
     if isinstance(raw, str) and raw.strip():
         raw = json.loads(raw)
@@ -62,6 +67,11 @@ def normalized_supernodes(qparams: dict[str, Any]) -> list[list[str]]:
 
 
 def find_supernode(graph: dict[str, Any], name: str) -> tuple[str, list[str]]:
+    """Look up a supernode by (case-insensitive) label; returns ``(label, node_ids)``.
+
+    Raises ``ValueError`` listing the available supernode labels if ``name``
+    isn't found.
+    """
     qparams = graph.get("qParams", {})
     if not isinstance(qparams, dict):
         qparams = {}
@@ -76,6 +86,7 @@ def find_supernode(graph: dict[str, Any], name: str) -> tuple[str, list[str]]:
 
 
 def graph_feature_keys(graph: dict[str, Any]) -> list[tuple[int, int, int]]:
+    """Return the deduplicated ``(layer, pos, feature)`` keys of every transcoder feature node."""
     keys: list[tuple[int, int, int]] = []
     seen: set[tuple[int, int, int]] = set()
     for node in graph.get("nodes", []):
@@ -98,6 +109,7 @@ def graph_feature_keys(graph: dict[str, Any]) -> list[tuple[int, int, int]]:
 
 
 def graph_nodes_by_id(graph: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Index a graph's nodes by ``node_id`` for O(1) lookup."""
     return {
         node["node_id"]: node
         for node in graph.get("nodes", [])
@@ -106,10 +118,12 @@ def graph_nodes_by_id(graph: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def is_graph_feature_node(node: dict[str, Any] | None) -> bool:
+    """Return whether ``node`` is a transcoder feature node (as opposed to error/embedding/logit)."""
     return bool(node and node.get("feature_type") == "cross layer transcoder")
 
 
 def primary_logit_target(graph: dict[str, Any]) -> tuple[int | None, int | None]:
+    """Return ``(vocab_idx, pos)`` of the graph's target-logit node, or ``(None, None)`` if absent."""
     for node in graph.get("nodes", []):
         if not isinstance(node, dict) or not node.get("is_target_logit"):
             continue
@@ -127,12 +141,14 @@ def primary_logit_target(graph: dict[str, Any]) -> tuple[int | None, int | None]
 
 
 def tensor_probs(logits):
+    """Convert raw logits to a softmax probability distribution over the vocabulary."""
     import torch
 
     return torch.softmax(logits.float(), dim=-1)
 
 
 def top_token_rows(tokenizer, values, *, k: int, largest_abs: bool = False) -> list[dict[str, Any]]:
+    """Return the top-``k`` tokens by ``values`` (or by ``|values|`` if ``largest_abs``) as dicts."""
     import torch
 
     if k <= 0:
@@ -153,6 +169,7 @@ def top_token_rows(tokenizer, values, *, k: int, largest_abs: bool = False) -> l
 
 
 def setup_logging() -> None:
+    """Configure root logging to stream INFO-and-above to stdout with timestamps."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-8s %(name)s | %(message)s",

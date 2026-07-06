@@ -11,7 +11,7 @@ analysis: layers 24/33 at positions 11/18.
 Example:
 
     llm-biology/venv/bin/python3 \
-        python -m llm_biology.figures.plot_cross_model_feature_fate_unsupervised \
+        -m llm_biology.figures.plot_cross_model_feature_fate_unsupervised \
         llm-biology/data/base_jailbreak_comparison/2026-07-03__base_to_jailbroken_allnodes__vs-qwen3-4b-heretic-trial114-merged.csv \
         llm-biology/data/base_jailbreak_comparison/2026-07-03__jailbroken_to_base_allnodes__vs-qwen3-4b.csv \
         --output-pdf report/figures/feature_fate_map_unsupervised.pdf \
@@ -88,6 +88,8 @@ PINNED_PANEL_NAMES = {
 
 @dataclass(frozen=True)
 class Feature:
+    """One all-node feature's cross-model re-measurement, plus derived plotting properties."""
+
     direction: str
     node_id: str
     layer: int
@@ -104,34 +106,41 @@ class Feature:
 
     @property
     def callout_label(self) -> str:
+        """Preferred callout label: the human-reviewed label if available, else the auto label."""
         return self.human_label or self.label
 
     @property
     def is_region(self) -> bool:
+        """Whether this feature sits in the late-decision region (layers 24/33, positions 11/18)."""
         return self.layer in REGION_LAYERS and self.pos in REGION_POSITIONS
 
     @property
     def is_degraded(self) -> bool:
+        """Whether this feature's outcome is "absent" or "reduced" in the comparison model."""
         return self.outcome in DEGRADED_OUTCOMES
 
     @property
     def size_metric(self) -> float:
+        """Magnitude used to rank/size this feature: graph influence if positive, else |activation|."""
         if self.source_influence is not None and self.source_influence > 0:
             return self.source_influence
         return abs(self.source_activation)
 
     @property
     def activation_ratio(self) -> float:
+        """Unclipped |comparison| / |source| activation ratio (``RATIO_MAX`` if source is 0 but comparison isn't)."""
         if self.source_activation == 0:
             return 0.0 if self.comparison_activation == 0 else RATIO_MAX
         return abs(self.comparison_activation) / abs(self.source_activation)
 
     @property
     def clipped_activation_ratio(self) -> float:
+        """``activation_ratio`` clipped to ``[RATIO_MIN, RATIO_MAX]`` for colour-mapping."""
         return min(max(self.activation_ratio, RATIO_MIN), RATIO_MAX)
 
     @property
     def colour(self) -> tuple[float, float, float, float]:
+        """RGBA colour for this feature's dot, from the activation-ratio colormap."""
         return RATIO_CMAP(RATIO_NORM(self.clipped_activation_ratio))
 
 
@@ -148,6 +157,7 @@ def escape_token(token: str) -> str:
 
 
 def as_float(raw: str) -> float | None:
+    """Parse a CSV field as a float, returning ``None`` for blanks or non-finite values."""
     if raw == "":
         return None
     value = float(raw)
@@ -155,6 +165,7 @@ def as_float(raw: str) -> float | None:
 
 
 def load_human_labels(path: Path) -> dict[str, str]:
+    """Load ``{node_id: label}`` overrides from a pinned-panel JSON, or ``{}`` if it doesn't exist."""
     if not path.exists():
         return {}
     with path.open("r", encoding="utf-8") as handle:
@@ -168,6 +179,7 @@ def load_human_labels(path: Path) -> dict[str, str]:
 
 
 def default_human_label_path(csv_path: Path, direction: str) -> Path | None:
+    """Guess the pinned-panel JSON path for ``direction``, alongside the given CSV."""
     name = PINNED_PANEL_NAMES.get(direction)
     if name is None:
         return None
@@ -175,6 +187,7 @@ def default_human_label_path(csv_path: Path, direction: str) -> Path | None:
 
 
 def load_features(path: Path, human_labels: dict[str, str] | None = None) -> list[Feature]:
+    """Load an all-node feature-fate CSV into a list of :class:`Feature`, applying label overrides."""
     with path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
 
@@ -202,6 +215,7 @@ def load_features(path: Path, human_labels: dict[str, str] | None = None) -> lis
 
 
 def position_tokens(feature_sets: list[list[Feature]]) -> dict[int, str]:
+    """Map each token position to its (first-seen) comparison token, across both panels."""
     tokens: dict[int, str] = {}
     for features in feature_sets:
         for feature in features:
@@ -210,6 +224,7 @@ def position_tokens(feature_sets: list[list[Feature]]) -> dict[int, str]:
 
 
 def grouped_by_cell(features: list[Feature]) -> dict[tuple[int, int], list[Feature]]:
+    """Group features by ``(layer, pos)`` cell, each group sorted degraded-first by size metric."""
     grouped: dict[tuple[int, int], list[Feature]] = {}
     for feature in features:
         grouped.setdefault((feature.layer, feature.pos), []).append(feature)
@@ -219,6 +234,7 @@ def grouped_by_cell(features: list[Feature]) -> dict[tuple[int, int], list[Featu
 
 
 def layer_edges() -> list[float]:
+    """Cumulative row boundaries for ``LAYERS``, in the fixed ``LAYER_HEIGHTS`` units."""
     edges = [0.0]
     for layer in LAYERS:
         edges.append(edges[-1] + LAYER_HEIGHTS[layer])
@@ -226,6 +242,7 @@ def layer_edges() -> list[float]:
 
 
 def dot_sizes(features: list[Feature]) -> dict[str, float]:
+    """Return a uniform marker size per feature node id (all dots are drawn the same size)."""
     return {feature.node_id: DOT_SIZE for feature in features}
 
 
@@ -236,6 +253,12 @@ def choose_grid_shape(
     height: float,
     x_to_y_display_scale: float,
 ) -> tuple[int, int]:
+    """Pick a (cols, rows) grid for packing ``n_features`` dots into a cell as evenly as possible.
+
+    Scores each candidate column count by the resulting per-dot spacing
+    (accounting for the display aspect ratio via ``x_to_y_display_scale``) and
+    keeps the layout with the largest minimum spacing.
+    """
     best_cols = 1
     best_rows = n_features
     best_score = -1.0
@@ -260,6 +283,7 @@ def cell_dot_positions(
     top: float,
     x_to_y_display_scale: float,
 ) -> list[tuple[float, float]]:
+    """Lay out ``n_features`` dot positions inside one grid cell using :func:`choose_grid_shape`."""
     x_margin = 0.08 * (right - left)
     y_margin = 0.10 * (top - bottom)
     inner_left = left + x_margin
@@ -298,6 +322,7 @@ def scatter_panel(
     tokens: dict[int, str],
     title: str,
 ) -> dict[str, tuple[float, float]]:
+    """Draw one scatter panel (layer × token position grid of dots) and return each node's plotted (x, y)."""
     x_edges = [float(index) for index in range(len(positions) + 1)]
     y_edges = layer_edges()
     pos_to_index = {pos: index for index, pos in enumerate(positions)}
@@ -370,6 +395,7 @@ def scatter_panel(
 
 
 def choose_callouts(features: list[Feature]) -> list[Feature]:
+    """Pick up to 5 features to annotate: keyword-matched highlights first, then top-ranked fallbacks."""
     direction = features[0].direction if features else ""
     selected: list[Feature] = []
     used_ids: set[str] = set()
@@ -414,14 +440,17 @@ def choose_callouts(features: list[Feature]) -> list[Feature]:
 
 
 def wrapped_callout(label: str) -> str:
+    """Word-wrap a callout label to a fixed width, falling back to a placeholder if empty."""
     return "\n".join(textwrap.wrap(label, width=18, break_long_words=False)) or "(unlabelled)"
 
 
 def display_callout_label(feature: Feature) -> str:
+    """Resolve the callout text for ``feature``, applying any manual per-node override."""
     return CALLOUT_LABEL_OVERRIDES.get((feature.direction, feature.node_id), feature.callout_label)
 
 
 def callout_colour(feature: Feature) -> Any:
+    """Callout arrow/box colour: neutral grey near-unchanged ratios, else the feature's ratio colour."""
     if 0.8 <= feature.clipped_activation_ratio <= 1.2:
         return "0.42"
     return feature.colour
@@ -434,6 +463,7 @@ def add_callouts(
     locations: dict[str, tuple[float, float]],
     side: str,
 ) -> None:
+    """Annotate the panel's most notable features with labelled callout arrows on ``side``."""
     callouts = [feature for feature in choose_callouts(features) if feature.node_id in locations]
     if not callouts:
         return
@@ -482,6 +512,7 @@ def add_callouts(
 
 
 def direction_title(direction: str, n_features: int) -> str:
+    """Build the panel title for a comparison direction, including the feature count."""
     if direction == "base_to_jailbroken":
         return f"A  Base graph features in the abliterated model (n={n_features})"
     if direction == "jailbroken_to_base":
@@ -492,6 +523,7 @@ def direction_title(direction: str, n_features: int) -> str:
 def build_figure(
     base_to_jailbroken: list[Feature], jailbroken_to_base: list[Feature]
 ) -> plt.Figure:
+    """Build the two-panel unsupervised dot-map figure with callouts and a shared colourbar."""
     feature_sets = [base_to_jailbroken, jailbroken_to_base]
     positions = sorted({feature.pos for features in feature_sets for feature in features})
     tokens = position_tokens(feature_sets)
@@ -534,6 +566,7 @@ def build_figure(
 
 
 def fisher_p_value(table: list[list[int]]) -> dict[str, float] | None:
+    """One-sided Fisher's exact test on a 2x2 contingency table, or ``None`` if scipy is unavailable."""
     try:
         from scipy.stats import fisher_exact
     except ImportError:
@@ -543,6 +576,7 @@ def fisher_p_value(table: list[list[int]]) -> dict[str, float] | None:
 
 
 def summarise_direction(features: list[Feature]) -> dict[str, Any]:
+    """Summarise one direction's outcome counts and the late-region-vs-elsewhere degradation contrast."""
     outcome_counts = dict(Counter(feature.outcome for feature in features))
     region_degraded = sum(feature.is_region and feature.is_degraded for feature in features)
     region_shared = sum(
@@ -585,6 +619,7 @@ def summarise_direction(features: list[Feature]) -> dict[str, Any]:
 def build_summary(
     base_to_jailbroken: list[Feature], jailbroken_to_base: list[Feature]
 ) -> dict[str, Any]:
+    """Build the full JSON summary: per-direction stats plus caveats about row independence."""
     return {
         "base_to_jailbroken": summarise_direction(base_to_jailbroken),
         "jailbroken_to_base": summarise_direction(jailbroken_to_base),
@@ -596,6 +631,7 @@ def build_summary(
 
 
 def print_summary(summary: dict[str, Any]) -> None:
+    """Print a human-readable rendering of :func:`build_summary`'s output to stdout."""
     for direction, item in summary.items():
         if direction == "notes":
             continue
@@ -623,6 +659,7 @@ def print_summary(summary: dict[str, Any]) -> None:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for the unsupervised feature-fate dot map."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("base_to_jailbroken_csv", type=Path)
     parser.add_argument("jailbroken_to_base_csv", type=Path)
@@ -664,6 +701,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """CLI entry point: build the dot-map figure, save it, and write the region-contrast summary."""
     args = parse_args()
     base_label_path = args.base_human_labels or default_human_label_path(
         args.base_to_jailbroken_csv, "base_to_jailbroken"

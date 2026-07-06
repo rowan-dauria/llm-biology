@@ -92,6 +92,7 @@ class FeatureIntervention:
             raise ValueError("FeatureIntervention takes value XOR factor, not both")
 
     def resolve(self, clean_activation: float) -> float:
+        """Resolve the new activation value given this feature's clean activation."""
         if self.value is not None:
             return float(self.value)
         if self.factor is not None:
@@ -136,6 +137,7 @@ class InterventionResult:
 
 
 def _block_layers(model: HookedTransformer) -> range:
+    """Return ``range(0, n_layers)`` for iterating over every transformer block."""
     return range(model.cfg.n_layers)
 
 
@@ -172,6 +174,8 @@ def _capture_clean(
     fwd_hooks: list = []
 
     def _pattern_hook(layer: int):
+        """Cache this layer's clean attention pattern for later freezing."""
+
         def hook(acts: torch.Tensor, hook: HookPoint) -> torch.Tensor:  # noqa: ARG001
             cap["patterns"][layer] = acts.detach().clone()
             return acts
@@ -179,6 +183,8 @@ def _capture_clean(
         return hook
 
     def _scale_hook(store: dict, key):
+        """Cache a clean LayerNorm/RMSNorm scale under ``store[key]`` for later freezing."""
+
         def hook(acts: torch.Tensor, hook: HookPoint) -> torch.Tensor:  # noqa: ARG001
             store[key] = acts.detach().clone()
             return acts
@@ -186,6 +192,8 @@ def _capture_clean(
         return hook
 
     def _untracked_mlp_hook(layer: int):
+        """Cache the true MLP output of an untracked (no-transcoder) layer for later freezing."""
+
         def hook(acts: torch.Tensor, hook: HookPoint) -> torch.Tensor:  # noqa: ARG001
             cap["untracked_mlp"][layer] = acts.detach().clone()
             return acts
@@ -193,6 +201,7 @@ def _capture_clean(
         return hook
 
     def _tracked_in_hook(layer: int):
+        """Encode this tracked layer's clean MLP input into transcoder feature activations."""
         transcoder = transcoders[layer]
 
         def hook(acts: torch.Tensor, hook: HookPoint) -> torch.Tensor:  # noqa: ARG001
@@ -205,6 +214,7 @@ def _capture_clean(
         return hook
 
     def _tracked_out_hook(layer: int):
+        """Compute and cache this tracked layer's reconstruction-error term against the clean MLP output."""
         transcoder = transcoders[layer]
 
         def hook(acts: torch.Tensor, hook: HookPoint) -> torch.Tensor:  # noqa: ARG001
@@ -245,6 +255,7 @@ def _read_feature_acts(
     features_by_layer: dict[int, torch.Tensor],
     keys: Sequence[FeatureKey],
 ) -> dict[FeatureKey, float]:
+    """Read the scalar activation at each ``(layer, pos, feature)`` key from cached per-layer tensors."""
     out: dict[FeatureKey, float] = {}
     for layer, pos, feature in keys:
         feats = features_by_layer.get(layer)
@@ -354,6 +365,8 @@ def run_feature_intervention(
     fwd_hooks: list = []
 
     def _freeze_value_hook(value: torch.Tensor):
+        """Build a hook that always returns the clean-captured ``value``, ignoring the live activation."""
+
         def hook(acts: torch.Tensor, hook: HookPoint) -> torch.Tensor:  # noqa: ARG001
             return value.to(device=acts.device, dtype=acts.dtype)
 
@@ -362,6 +375,7 @@ def run_feature_intervention(
     ablate_map = dict(ablate_all_features_at or {})
 
     def _iv_in_hook(layer: int):
+        """Encode this layer's MLP input, then apply feature clamps and/or full-layer ablation."""
         transcoder = transcoders[layer]
         clamps = iv_by_layer.get(layer, [])
         ablate_here = layer in ablate_map
@@ -385,6 +399,7 @@ def run_feature_intervention(
         return hook
 
     def _iv_out_hook(layer: int):
+        """Decode this layer's intervened features, add the clean error term and any residual writes."""
         transcoder = transcoders[layer]
         writes_here = writes_by_layer.get(layer, [])
 
@@ -529,12 +544,16 @@ def compute_direct_logit_contributions(
     fwd_hooks: list = []
 
     def _freeze_value_hook(value: torch.Tensor):
+        """Build a hook that always returns the clean-captured ``value``, ignoring the live activation."""
+
         def hook(acts: torch.Tensor, hook: HookPoint) -> torch.Tensor:  # noqa: ARG001
             return value.to(device=acts.device, dtype=acts.dtype)
 
         return hook
 
     def _leaf_in_hook(layer: int):
+        """Cache this layer's MLP input tensor (used by the skip path in :func:`_leaf_out_hook`)."""
+
         def hook(acts: torch.Tensor, hook: HookPoint) -> torch.Tensor:  # noqa: ARG001
             mlp_in_cache[layer] = acts
             return acts
@@ -542,6 +561,7 @@ def compute_direct_logit_contributions(
         return hook
 
     def _leaf_out_hook(layer: int):
+        """Decode this layer's differentiable feature leaf and add the clean error term."""
         transcoder = transcoders[layer]
 
         def hook(acts: torch.Tensor, hook: HookPoint) -> torch.Tensor:  # noqa: ARG001

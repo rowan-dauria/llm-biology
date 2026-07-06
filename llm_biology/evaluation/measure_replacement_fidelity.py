@@ -111,6 +111,7 @@ def tokenise_corpus(
     chunk_len: int,
     device: torch.device,
 ) -> list[torch.Tensor]:
+    """Load, concatenate, and tokenize a corpus split into fixed-length ``(1, chunk_len+1)`` chunks."""
     from datasets import load_dataset
 
     print(f"Loading {dataset}/{dataset_config} split={split}")
@@ -214,6 +215,7 @@ def chunk_metrics(
 
 
 def main() -> None:
+    """CLI entry point: measure per-layer and all-layer transcoder-replacement fidelity."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--layers",
@@ -300,6 +302,7 @@ def main() -> None:
 
     # Aggregate
     def _stats(xs: list[float]) -> tuple[float, float]:
+        """Return ``(mean, population std)`` of ``xs``."""
         mu = sum(xs) / len(xs)
         sigma = (sum((x - mu) ** 2 for x in xs) / len(xs)) ** 0.5
         return mu, sigma

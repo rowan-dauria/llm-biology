@@ -1,17 +1,21 @@
-"""Attribution rows on a linearised TransformerLens model.
+"""Custom attribution algorithm on a linearised TransformerLens model.
 
-Three layers of API, all consuming a populated :class:`HookState`:
+This module, along with :mod:`llm_biology.model.tl_forward`, implements the
+project's own attribution algorithm from scratch; circuit-tracer contributes
+only the ``SingleLayerTranscoder`` class used to reconstruct MLP outputs
+(see :mod:`llm_biology.attribution.attribution`). Three layers of API, all
+consuming a populated :class:`HookState`:
 
 - :func:`attribute_logit_row` — one backward from ``state.final_hidden`` with a
   demeaned-unembed gradient at a single ``(0, pos, :)`` slot. ``final_hidden``
-  is the post-final-norm, pre-unembed residual. (Chunk 4.)
+  is the post-final-norm, pre-unembed residual.
 - :func:`attribute_feature_row` — one backward from ``state.mlp_inputs[layer]``
   with an encoder vector at a single ``(0, pos, :)`` slot. Source attribution
-  for a single feature target. (Chunk 5.) Intentionally slow; correctness
-  oracle for the batched version.
+  for a single feature target. Intentionally slow; correctness oracle for the
+  batched version.
 - :class:`AttributionContext` / :func:`setup_attribution` — batched backward
   via ``input_ids.expand(batch_size, -1)`` plus per-slot ``register_hook``
-  injection. ``batch_size`` rows in one ``.backward()``. (Chunk 6.)
+  injection. ``batch_size`` rows in one ``.backward()``.
 
 All three return ``(feature_scores, error_scores, embedding_scores)`` over the
 active source nodes captured by the forward pass.
@@ -55,10 +59,12 @@ __all__ = [
 
 
 def total_active_features(state: HookState) -> int:
+    """Total number of active (layer, position, feature) triples across tracked layers."""
     return sum(state.layer_features[layer].feature_ids.numel() for layer in state.layers)
 
 
 def _n_pos_from_state(state: HookState) -> int:
+    """Recover the sequence length from whichever forward-captured tensor is available."""
     if state.token_vectors is not None:
         return int(state.token_vectors.shape[0])
     if state.final_hidden is not None:
@@ -67,6 +73,7 @@ def _n_pos_from_state(state: HookState) -> int:
 
 
 def total_error_nodes(state: HookState) -> int:
+    """Total number of MLP-reconstruction-error nodes: one per (tracked layer, position)."""
     return len(state.layers) * _n_pos_from_state(state)
 
 
@@ -169,6 +176,7 @@ def collect_error_scores(
 
 
 def collect_embedding_scores(state: HookState, *, batch_index: int = 0) -> torch.Tensor:
+    """Contract the embedding gradient with the (detached) token vectors, per position."""
     if state.embedding_grad is None or state.token_vectors is None:
         raise RuntimeError("Embedding gradients were not captured")
     return (
@@ -248,7 +256,7 @@ def attribute_feature_row(
 
 
 # ---------------------------------------------------------------------------
-# Chunk 5: serial oracle for the batched version.
+# Serial attribution: a correctness oracle for the batched version below.
 # ---------------------------------------------------------------------------
 
 
@@ -307,7 +315,7 @@ def build_dense_edge_matrix_serial(
 
 
 # ---------------------------------------------------------------------------
-# Chunk 6: batched backward.
+# Batched backward: attribute many targets in a single backward pass.
 # ---------------------------------------------------------------------------
 
 
@@ -331,6 +339,7 @@ class AttributionContext:
         batch_size: int,
         logits: torch.Tensor,
     ) -> None:
+        """Wrap a completed forward pass, ready to serve attribution batches via :meth:`compute_batch`."""
         if state.final_hidden is None:
             raise RuntimeError("setup_attribution must be called before compute_batch")
         self.model = model
@@ -480,7 +489,7 @@ def setup_attribution(
 
 
 # ---------------------------------------------------------------------------
-# Chunk 7: partial-graph top-K feature selection.
+# Iterative top-K feature selection over a partially filled attribution graph.
 # ---------------------------------------------------------------------------
 
 
@@ -527,6 +536,7 @@ def compute_partial_influences(
 
 
 def _active_features_from_state(state: HookState) -> list[ActiveFeature]:
+    """Flatten every tracked layer's active features into a single ordered list."""
     active: list[ActiveFeature] = []
     for layer in state.layers:
         data = state.layer_features[layer]
@@ -549,6 +559,7 @@ def _as_logit_target_specs(
     *,
     default_pos: int,
 ) -> list[TargetSpec]:
+    """Normalize heterogeneous logit-target objects into logit-kind :class:`TargetSpec`\\ s."""
     specs: list[TargetSpec] = []
     for target in logit_targets:
         if isinstance(target, TargetSpec):
@@ -581,6 +592,7 @@ def _as_logit_target_specs(
 
 
 def _feature_target_from_active(feature: ActiveFeature) -> TargetSpec:
+    """Build a feature-kind :class:`TargetSpec` that attributes to ``feature``'s own activation."""
     return TargetSpec(
         kind="feature",
         layer=feature.layer,
@@ -764,7 +776,7 @@ def run_attribution(
     layers: Sequence[int] | None = None,
     zero_positions: slice | None = slice(0, 1),
 ) -> tuple[list[ActiveFeature], torch.Tensor]:
-    """Phase 0 + Phase 3 + Phase 4 attribution orchestration.
+    """End-to-end attribution: tokenize, run the forward pass, then attribute.
 
     ``prompt`` may be a token tensor/list or a string accepted by
     ``HookedTransformer.to_tokens``. The returned dense matrix is already

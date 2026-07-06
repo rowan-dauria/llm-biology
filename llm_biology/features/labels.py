@@ -12,6 +12,8 @@ DEFAULT_LABEL_DIR = Path(__file__).parent.parent / "data" / "feature_labels"
 
 @dataclass(frozen=True, slots=True)
 class FeatureLabel:
+    """A single (layer, feature) label record loaded from a ``layer_<L>.jsonl`` file."""
+
     layer: int
     feature: int
     label: str
@@ -25,6 +27,7 @@ FeatureLabelMap = dict[tuple[int, int], FeatureLabel]
 
 
 def _parse_record(record: dict[str, Any], *, source: Path, line_no: int) -> FeatureLabel:
+    """Parse one JSONL record into a :class:`FeatureLabel`, raising with file/line context on error."""
     try:
         layer = int(record["layer"])
         feature = int(record["feature"])

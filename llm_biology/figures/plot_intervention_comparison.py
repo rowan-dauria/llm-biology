@@ -33,6 +33,7 @@ import numpy as np  # noqa: E402
 
 
 def load_sweep(path: Path) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Load a sweep JSON and return ``(magnitudes, intervened_probs, raw_data)``, sorted by magnitude."""
     data = json.loads(path.read_text(encoding="utf-8"))
     results = sorted(data["results"], key=lambda r: r["magnitude"])
     mag = np.array([r["magnitude"] for r in results], dtype=float)
@@ -41,6 +42,7 @@ def load_sweep(path: Path) -> tuple[np.ndarray, np.ndarray, dict]:
 
 
 def main() -> None:
+    """CLI entry point: overlay two supernode sweeps and plot their probability difference."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sweep_a", type=Path, help="first …__intervention-sweep__….json")
     parser.add_argument("sweep_b", type=Path, help="second …__intervention-sweep__….json")

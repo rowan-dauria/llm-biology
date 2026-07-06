@@ -13,6 +13,8 @@ LOCAL_FEATURE_DIR = "qwen3-4b-transcoders"
 
 @dataclass(frozen=True, slots=True)
 class FeatureNode:
+    """A transcoder feature node in the exported graph."""
+
     layer: int
     pos: int
     feature: int
@@ -23,6 +25,8 @@ class FeatureNode:
 
 @dataclass(frozen=True, slots=True)
 class ErrorNode:
+    """A per-(layer, position) MLP-reconstruction-error node in the exported graph."""
+
     layer: int
     pos: int
     influence: float | None = 0.0
@@ -30,6 +34,8 @@ class ErrorNode:
 
 @dataclass(frozen=True, slots=True)
 class GraphLink:
+    """A directed, signed edge between two node ids in the exported graph."""
+
     source: str
     target: str
     weight: float
@@ -37,6 +43,8 @@ class GraphLink:
 
 @dataclass(frozen=True, slots=True)
 class LogitNode:
+    """An output-logit node in the exported graph."""
+
     vocab_idx: int
     token: str
     token_prob: float
@@ -51,26 +59,32 @@ def cantor_pair(x: int, y: int) -> int:
 
 
 def paired_feature_index(layer: int, feature: int) -> int:
+    """Return the single integer index the frontend uses to key feature-example files."""
     return cantor_pair(layer, feature)
 
 
 def feature_node_id(layer: int, feature: int, pos: int) -> str:
+    """Build the frontend node id for a transcoder feature at (layer, feature, position)."""
     return f"{layer}_{feature}_{pos}"
 
 
 def error_node_id(layer: int, pos: int) -> str:
+    """Build the frontend node id for an MLP-reconstruction-error node."""
     return f"0_{layer}_{pos}"
 
 
 def embedding_node_id(vocab_idx: int, pos: int) -> str:
+    """Build the frontend node id for an input-embedding node."""
     return f"E_{vocab_idx}_{pos}"
 
 
 def logit_node_id(num_layers: int, vocab_idx: int, pos: int) -> str:
+    """Build the frontend node id for an output-logit node (placed one layer past the model)."""
     return f"{num_layers + 1}_{vocab_idx}_{pos}"
 
 
 def _feature_node_to_json(node: FeatureNode) -> dict[str, Any]:
+    """Serialize a :class:`FeatureNode` into the frontend's expected node dict."""
     paired = paired_feature_index(node.layer, node.feature)
     data: dict[str, Any] = {
         "node_id": feature_node_id(node.layer, node.feature, node.pos),
@@ -93,6 +107,7 @@ def _feature_node_to_json(node: FeatureNode) -> dict[str, Any]:
 
 
 def _error_node_to_json(node: ErrorNode) -> dict[str, Any]:
+    """Serialize an :class:`ErrorNode` into the frontend's expected node dict."""
     data: dict[str, Any] = {
         "node_id": error_node_id(node.layer, node.pos),
         "feature": -1,
@@ -113,6 +128,7 @@ def _error_node_to_json(node: ErrorNode) -> dict[str, Any]:
 
 
 def _with_cumulative_influence(nodes: list[FeatureNode]) -> list[FeatureNode]:
+    """Replace each node's ``influence`` with its rank-ordered cumulative share of total influence."""
     scored_nodes = [
         (idx, float(node.influence))
         for idx, node in enumerate(nodes)
@@ -142,6 +158,7 @@ def _with_cumulative_influence(nodes: list[FeatureNode]) -> list[FeatureNode]:
 
 
 def _embedding_node_to_json(pos: int, vocab_idx: int) -> dict[str, Any]:
+    """Build the frontend node dict for an input-embedding node."""
     return {
         "node_id": embedding_node_id(vocab_idx, pos),
         "feature": pos,
@@ -165,6 +182,7 @@ def _logit_node_to_json(
     token: str,
     token_prob: float,
 ) -> dict[str, Any]:
+    """Build the frontend node dict for an output-logit node."""
     layer = str(num_layers + 1)
     return {
         "node_id": logit_node_id(num_layers, vocab_idx, pos),
@@ -182,6 +200,7 @@ def _logit_node_to_json(
 
 
 def _read_graph_metadata(path: Path) -> dict[str, Any]:
+    """Read the ``graph-metadata.json`` index, or an empty index if it doesn't exist yet."""
     if not path.exists():
         return {"graphs": []}
     with path.open(encoding="utf-8") as handle:
@@ -264,6 +283,7 @@ def merge_qparams(
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Write ``payload`` as pretty-printed, UTF-8 JSON, creating parent directories as needed."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, ensure_ascii=False)
@@ -288,6 +308,7 @@ def write_feature_examples(
     *,
     feature_dir_name: str = LOCAL_FEATURE_DIR,
 ) -> None:
+    """Write one JSON file per feature-example payload under ``output_dir/features/<name>/``."""
     feature_dir = output_dir / "features" / feature_dir_name
     feature_dir.mkdir(parents=True, exist_ok=True)
     for feature_index, payload in feature_examples.items():
@@ -313,7 +334,16 @@ def export_circuit_graph(
     feature_examples: dict[int, dict[str, Any]] | None = None,
     scan: str = LOCAL_SCAN,
 ) -> Path:
-    """Write a graph JSON and metadata file for circuit-tracer's local server."""
+    """Write a graph JSON and metadata file for circuit-tracer's local server.
+
+    Assembles feature/error/embedding/logit nodes and links into the JSON
+    schema the bundled frontend expects, merges any existing UI state
+    (pinned nodes, supernodes) forward via :func:`merge_qparams`, and updates
+    ``graph-metadata.json`` in ``output_dir`` so the graph appears in the
+    viewer's graph list. Raises ``ValueError`` if any link references a node
+    id that isn't in the exported node set. Returns the path to the written
+    graph JSON.
+    """
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

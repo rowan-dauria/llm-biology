@@ -18,9 +18,10 @@ pruning, interventions, labels, and exports are project code.
   steerable-ceiling diagnostics.
 - `llm_biology/features/`: top-K activation windows, LLM labelling, graph target
   selection, and graph-label patching.
+- `llm_biology/evaluation/`: replacement-fidelity (KL / delta-CE) measurement.
 - `llm_biology/refusal/`: base-vs-Heretic feature panel and cross-model
   activation comparison tools.
-- `llm_biology/figures/`: plotting and table-generation helpers for saved JSON
+- `llm_biology/figures/`: plotting and table-generation helpers for saved JSON/CSV
   outputs.
 - `llm_biology/viewer/`: viz-only Neuronpedia-compatible local graph viewer.
 - `slurm/run_gpu.wilkes3`: generic CSD3 GPU launcher.
@@ -71,7 +72,7 @@ features:
 
 ```bash
 python -m llm_biology.features.build_topk
-python -m llm_biology.features.label_features
+python -m llm_biology.features.label_features --layer 2 --topk-dir data/feature_topk
 python -m llm_biology.features.label_from_graph --slug <graph-slug>
 ```
 
@@ -101,19 +102,23 @@ python -m llm_biology.evaluation.measure_replacement_fidelity
 python -m llm_biology.interventions.sweep <graph.json> Texas
 python -m llm_biology.interventions.bootstrap_random_supernode_baseline <graph.json> Texas
 python -m llm_biology.interventions.steerable_ceiling <graph.json> Texas
-python -m llm_biology.refusal.build_feature_panel_from_graph <graph.json> --output panel.json
-python -m llm_biology.refusal.compare_cross_model_feature_activations panel.json
+python -m llm_biology.refusal.build_feature_panel_from_graph <graph.json> --direction base_to_jailbroken --output panel.json
+python -m llm_biology.refusal.compare_cross_model_feature_activations panel.json --comparison-model-id Qwen/Qwen3-4B
 ```
 
-Plot helpers consume JSON outputs:
+Plot helpers consume the JSON/CSV files written by the analyses above:
 
 ```bash
 python -m llm_biology.figures.plot_odds_vs_steering <baseline.json> <sweep.json>
 python -m llm_biology.figures.plot_steering_top_logits <sweep.json>
 python -m llm_biology.figures.plot_intervention_comparison <sweep-a.json> <sweep-b.json> --output out.png
-python -m llm_biology.figures.plot_cross_model_feature_fate <forward.json> <reverse.json>
-python -m llm_biology.figures.plot_cross_model_feature_fate_unsupervised <forward.json> <reverse.json>
+python -m llm_biology.figures.plot_cross_model_feature_fate <forward.csv> <reverse.csv>
+python -m llm_biology.figures.plot_cross_model_feature_fate_unsupervised <forward.csv> <reverse.csv>
 ```
+
+The first three read the `.json` files from `sweep`/`bootstrap_random_supernode_baseline`;
+the last two read the `.csv` (not `.json`) sibling written by
+`compare_cross_model_feature_activations`.
 
 ## SLURM
 

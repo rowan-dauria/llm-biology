@@ -40,10 +40,12 @@ DEFAULT_GRAPH_DIR = Path(__file__).resolve().parents[2] / "data" / "ui_graphs"
 
 
 def _cantor_pair(x: int, y: int) -> int:
+    """Pair two non-negative ints using the frontend's expected Cantor map."""
     return (x + y) * (x + y + 1) // 2 + y
 
 
 def _atomic_write_json(path: Path, payload: Any) -> None:
+    """Write ``payload`` as JSON via a temp-file-then-rename to avoid partial writes."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_fd, tmp_path = tempfile.mkstemp(
         prefix=path.name + ".",
@@ -63,6 +65,11 @@ def _atomic_write_json(path: Path, payload: Any) -> None:
 def _patch_graph_nodes(
     graph: dict[str, Any], labels: FeatureLabelMap
 ) -> tuple[int, set[tuple[int, int]]]:
+    """Rewrite ``clerp`` on every transcoder feature node from the labels store, in place.
+
+    Returns the number of nodes updated and the set of ``(layer, feature)``
+    keys touched, for use by :func:`_patch_feature_examples`.
+    """
     updated = 0
     touched: set[tuple[int, int]] = set()
     for node in graph.get("nodes", []):
@@ -88,6 +95,11 @@ def _patch_feature_examples(
     touched: Iterable[tuple[int, int]],
     labels: FeatureLabelMap,
 ) -> tuple[int, int]:
+    """Rewrite ``label`` on each touched feature's example sidecar JSON, in place.
+
+    Returns ``(n_updated, n_missing)``; a sidecar is "missing" if no example
+    file exists yet for that ``(layer, feature)``.
+    """
     updated = 0
     missing = 0
     for layer, feature in touched:
@@ -134,6 +146,7 @@ def patch_graph(
 
 
 def main() -> None:
+    """CLI entry point: refresh clerp/label fields on a graph JSON and its sidecars."""
     parser = argparse.ArgumentParser(
         description="Refresh clerp labels on an attribution graph JSON.",
     )

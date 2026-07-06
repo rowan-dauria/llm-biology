@@ -52,6 +52,8 @@ _register_zstd()
 
 @dataclass
 class Batch:
+    """A padded, tokenised batch of prompts with their recovery-stable ids."""
+
     input_ids: torch.Tensor
     attention_mask: torch.Tensor
     prompt_ids: torch.Tensor
@@ -69,6 +71,7 @@ def _parse_n_prompts(value: str) -> int | None:
 def _iter_hf(
     repo: str, split: str, n_prompts: int | None, part_idx: int, num_parts: int
 ) -> Iterator[str]:
+    """Stream the ``text`` field of a Hugging Face dataset split, optionally sharded and capped."""
     from datasets import load_dataset
 
     ds = load_dataset(repo, split=split, streaming=True)
@@ -88,6 +91,7 @@ def _iter_hf(
 
 
 def _iter_jsonl(path: str, part_idx: int, num_parts: int) -> Iterator[str]:
+    """Stream the ``text`` field of a local JSON-lines file, keeping every ``num_parts``-th doc."""
     doc_idx = 0
     with open(path) as f:
         for line in f:
@@ -143,6 +147,7 @@ def iter_batches(
     part_idx: int = 0,
     num_parts: int = 1,
 ) -> Iterator[Batch]:
+    """Tokenise and batch ``iter_texts`` output into fixed-size, padded :class:`Batch`\\ es."""
     buf_texts: list[str] = []
     buf_ids: list[int] = []
     for prompt_id, text in iter_texts(corpus_spec, part_idx=part_idx, num_parts=num_parts):
@@ -162,6 +167,7 @@ def _make_batch(
     max_seq_len: int,
     device: torch.device | None,
 ) -> Batch:
+    """Tokenise ``texts`` with padding/truncation and assemble a :class:`Batch`."""
     enc = tokenizer(
         texts,
         max_length=max_seq_len,
@@ -185,6 +191,7 @@ def _make_batch(
 
 
 def main() -> None:
+    """CLI smoke test: print the shape/prompt-ids of each batch from a corpus spec."""
     p = argparse.ArgumentParser()
     p.add_argument("--corpus_spec", default="hf:monology/pile-uncopyrighted:train:32")
     p.add_argument("--batch_size", type=int, default=8)

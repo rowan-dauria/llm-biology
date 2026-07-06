@@ -16,10 +16,12 @@ _WARNED_MEMORY_PROFILER = False
 
 
 def memory_profile_enabled() -> bool:
+    """Return whether ``BIOLOGY_SERVER_PROFILE_MEMORY`` requests profiling output."""
     return os.getenv("BIOLOGY_SERVER_PROFILE_MEMORY", "").lower() in _TRUE_VALUES
 
 
 def _maybe_collect() -> None:
+    """Force a GC pass when ``BIOLOGY_SERVER_PROFILE_GC`` is set, for cleaner RSS readings."""
     if os.getenv("BIOLOGY_SERVER_PROFILE_GC", "").lower() in _TRUE_VALUES:
         gc.collect()
 
@@ -55,6 +57,7 @@ def current_rss_mib() -> float | None:
 
 
 def memory_checkpoint(label: str) -> None:
+    """Print current RSS tagged with ``label`` if memory profiling is enabled; no-op otherwise."""
     if not memory_profile_enabled():
         return
     _maybe_collect()
@@ -67,6 +70,7 @@ def memory_checkpoint(label: str) -> None:
 
 @contextmanager
 def memory_scope(label: str) -> Iterator[None]:
+    """Log RSS before/after the wrapped block, tagged with ``label``, when profiling is enabled."""
     if not memory_profile_enabled():
         yield
         return

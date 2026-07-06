@@ -28,6 +28,7 @@ DEFAULT_CONCURRENCY = 8
 
 
 def _resolve_graph_path(args: argparse.Namespace) -> Path:
+    """Resolve the graph JSON path from ``--graph``, or ``--slug``/``--graph-dir``."""
     if args.graph is not None:
         return args.graph
     if args.slug is None:
@@ -36,6 +37,7 @@ def _resolve_graph_path(args: argparse.Namespace) -> Path:
 
 
 def _print_target_summary(targets: list[GraphTarget]) -> None:
+    """Print a per-layer count and score-range summary of the selected targets."""
     if not targets:
         print("[INFO] no unlabelled targets")
         return
@@ -52,6 +54,7 @@ def _print_target_summary(targets: list[GraphTarget]) -> None:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for the attribution-first labelling pipeline."""
     parser = argparse.ArgumentParser(
         description=("Label graph-surfaced unlabelled features then patch the graph JSON."),
     )
@@ -89,6 +92,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """CLI entry point: select unlabelled graph targets, label them, and patch the graph."""
     args = parse_args()
     graph_path = _resolve_graph_path(args)
     if not graph_path.exists():

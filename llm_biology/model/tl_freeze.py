@@ -20,15 +20,18 @@ BwdHook = tuple[str, Callable[[torch.Tensor, HookPoint], None]]
 
 
 def _stop_gradient(acts: torch.Tensor, hook: HookPoint) -> torch.Tensor:
+    """Forward-hook that detaches ``acts``, blocking gradient flow through this point."""
     return acts.detach()
 
 
 def _enable_gradient(acts: torch.Tensor, hook: HookPoint) -> torch.Tensor:
+    """Forward-hook that marks ``acts`` as a leaf requiring gradient (used at the embedding)."""
     acts.requires_grad_(True)
     return acts
 
 
 def _scale_hook_points(block) -> list[HookPoint]:
+    """Collect the LayerNorm/RMSNorm ``hook_scale`` points present on a transformer block."""
     points: list[HookPoint] = []
     for name in ("ln1", "ln2", "ln1_post", "ln2_post"):
         sub = getattr(block, name, None)

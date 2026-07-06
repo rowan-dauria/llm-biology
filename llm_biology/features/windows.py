@@ -19,6 +19,13 @@ except ImportError:
 
 @dataclass(slots=True)
 class Window:
+    """One rendered top-K activation window for a single feature.
+
+    ``rendered`` marks the activating token with ``<<...>>`` when ``active``
+    is ``True``; otherwise it holds a placeholder explaining why (no
+    activation, missing prompt text, or an out-of-range token position).
+    """
+
     rank: int
     value: float
     prompt_id: int
@@ -29,6 +36,8 @@ class Window:
 
 @dataclass(slots=True)
 class FeatureSummary:
+    """Summary statistics for one feature's top-K windows, used for feature selection."""
+
     feature: int
     max_activation: float
     n_distinct_prompts: int
@@ -38,12 +47,14 @@ class FeatureSummary:
 def _feature_vectors(
     layer_data: Mapping[str, Any], feature_idx: int
 ) -> tuple[list[float], list[int]]:
+    """Extract the (activation value, prompt id) columns for one feature from a top-K tensor blob."""
     vals = layer_data["topk_vals"][:, feature_idx].tolist()
     prompt_ids = layer_data["topk_prompt_id"][:, feature_idx].tolist()
     return [float(val) for val in vals], [int(pid) for pid in prompt_ids]
 
 
 def active_prompt_ids(layer_data: Mapping[str, Any], feature_idx: int) -> frozenset[int]:
+    """Return the prompt ids where ``feature_idx`` actually fired (finite, positive activation)."""
     vals, prompt_ids = _feature_vectors(layer_data, feature_idx)
     return frozenset(
         pid for pid, val in zip(prompt_ids, vals, strict=True) if math.isfinite(val) and val > 0
@@ -56,6 +67,11 @@ def select_features(
     top_n: int,
     diversity: int,
 ) -> list[FeatureSummary]:
+    """Rank features by peak activation and keep the top ``top_n`` meeting a ``diversity`` floor.
+
+    ``diversity`` is the minimum number of distinct prompts a feature must
+    activate on to be kept; see the inline note below for why this matters.
+    """
     topk_vals = layer_data["topk_vals"]
     ranked = torch.argsort(torch.amax(topk_vals, dim=0), descending=True).tolist()
 
@@ -89,6 +105,12 @@ def select_features(
 def collect_prompt_texts(
     corpus_spec: str, needed_prompt_ids: set[int], num_parts: int = 1
 ) -> dict[int, str]:
+    """Re-stream ``corpus_spec`` and return the text for each id in ``needed_prompt_ids``.
+
+    Prompt ids encode their shard as ``pid = local * num_parts + worker``, so
+    each worker's shard is streamed independently and stopped as soon as its
+    needed local ids have all been seen.
+    """
     if not needed_prompt_ids:
         return {}
 
@@ -110,6 +132,7 @@ def collect_prompt_texts(
 
 
 def load_tokenizer(model_id: str) -> PreTrainedTokenizerBase:
+    """Load a tokenizer from the local Hugging Face cache only (no network access)."""
     local_dir = snapshot_download(model_id, local_files_only=True)
     tokenizer = AutoTokenizer.from_pretrained(
         local_dir,
@@ -129,6 +152,11 @@ def get_windows(
     *,
     text_by_prompt_id: Mapping[int, str] | None = None,
 ) -> list[Window]:
+    """Build rendered activation windows (`window` tokens either side) for one feature.
+
+    ``text_by_prompt_id`` may be precomputed (e.g. shared across features in a
+    batch); if omitted it is looked up via :func:`collect_prompt_texts`.
+    """
     vals, prompt_ids = _feature_vectors(layer_data, feature_idx)
     token_pos = layer_data["topk_token_pos"][:, feature_idx].tolist()
     token_pos = [int(pos) for pos in token_pos]
@@ -208,6 +236,7 @@ def get_windows(
 
 
 def format_windows_for_prompt(windows: Sequence[Window]) -> str:
+    """Render active windows as a numbered list for inclusion in a labeller LLM prompt."""
     active_windows = [window for window in windows if window.active]
     return "\n".join(
         f"#{index}: {window.rendered}" for index, window in enumerate(active_windows, start=1)

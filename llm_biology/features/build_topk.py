@@ -49,6 +49,7 @@ PROGRESS_LOG_EVERY = 50  # batches between per-worker progress lines
 
 
 def pick_worker_device(worker_idx: int) -> tuple[torch.device, torch.dtype]:
+    """Pick a device/dtype for ``worker_idx``, round-robining across available CUDA GPUs."""
     if torch.cuda.is_available():
         num_gpus = torch.cuda.device_count()
         gpu_idx = worker_idx % num_gpus
@@ -59,10 +60,12 @@ def pick_worker_device(worker_idx: int) -> tuple[torch.device, torch.dtype]:
 
 
 def _final_topk_path(layer: int) -> Path:
+    """Path for the final, merged top-K file for ``layer``."""
     return OUTPUT_DIR / f"topk_layer_{layer}.pt"
 
 
 def _worker_topk_path(layer: int, worker_idx: int, workers: int) -> Path:
+    """Path for one worker's partial top-K file for ``layer``, before merging."""
     return OUTPUT_DIR / f"topk_layer_{layer}_worker_{worker_idx}_of_{workers}.pt"
 
 
@@ -92,6 +95,7 @@ def _save_topk(
     model_id: str,
     num_parts: int,
 ) -> None:
+    """Save one layer's top-K tensors plus the metadata needed to recover windows later."""
     torch.save(
         {
             "layer": layer,
@@ -111,6 +115,8 @@ def _save_topk(
 
 @dataclass
 class LayerState:
+    """Running per-feature top-K state for one tracked layer."""
+
     vals: torch.Tensor  # (K, F) fp32, running top-K activations
     pid: torch.Tensor  # (K, F) int32, prompt id of each top-K entry
     tpos: torch.Tensor  # (K, F) int16, token position within that prompt
@@ -118,6 +124,8 @@ class LayerState:
 
 @dataclass
 class RunState:
+    """Mutable state threaded through a worker's forward-pre-hooks across the corpus stream."""
+
     k: int
     layer_state: dict[int, LayerState] = field(default_factory=dict)
     # Per-batch context, set by the main loop before each forward.
@@ -165,6 +173,12 @@ def make_topk_hook(
 
 
 def load_transcoders(device: torch.device, dtype: torch.dtype) -> dict[int, SingleLayerTranscoder]:
+    """Download (if needed) and load a ``SingleLayerTranscoder`` for each layer in ``LAYERS_TO_HOOK``.
+
+    Uses circuit-tracer's :func:`~circuit_tracer.transcoder.single_layer_transcoder.load_transcoder`
+    factory directly (the decoder is loaded lazily since this pipeline only
+    encodes; it never reconstructs the MLP output).
+    """
     wanted = [f"layer_{layer}.safetensors" for layer in LAYERS_TO_HOOK]
     transcoder_dir = Path(snapshot_download(TRANSCODER_REPO, allow_patterns=wanted))
     out: dict[int, SingleLayerTranscoder] = {}
@@ -213,6 +227,13 @@ def prefetch(iterable: Iterable, max_prefetch: int = 2) -> Iterator:
 
 
 def worker_fn(worker_idx: int, args: argparse.Namespace) -> None:
+    """Stream this worker's shard of the corpus through the model and save its partial top-K.
+
+    Loads the model/transcoders, registers a top-K-tracking forward-pre-hook
+    on each tracked layer's MLP, then runs a forward-only pass over the
+    worker's shard of the corpus. Saves one top-K file per layer (a partial
+    file if ``args.workers > 1``, else the final file directly).
+    """
     device, dtype = pick_worker_device(worker_idx)
     print(f"[Worker {worker_idx}] device={device} dtype={dtype}")
 
@@ -320,6 +341,7 @@ def worker_fn(worker_idx: int, args: argparse.Namespace) -> None:
 
 
 def merge_worker_files(workers: int) -> None:
+    """Merge each layer's per-worker top-K files into one final file, then delete the partials."""
     print(f"[INFO] merging results from {workers} workers for layers {LAYERS_TO_HOOK}")
     for layer in LAYERS_TO_HOOK:
         worker_files = [_worker_topk_path(layer, i, workers) for i in range(workers)]
@@ -363,6 +385,7 @@ def merge_worker_files(workers: int) -> None:
 
 
 def main() -> None:
+    """CLI entry point: build (optionally sharded) per-layer top-K activation windows."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus_spec", default="hf:monology/pile-uncopyrighted:train:1000")
     parser.add_argument("--k", type=int, default=8)

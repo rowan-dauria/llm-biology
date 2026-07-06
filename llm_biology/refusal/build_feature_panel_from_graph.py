@@ -1,7 +1,7 @@
 """Build a cross-model feature panel from a pruned attribution graph.
 
-This implements stages 1-3 of the base-vs-jailbroken comparison from
-`notes/meeting-notes/19-06-alessandro/alessandro-meeting-summary.md`:
+This implements stages 1-3 of the base-vs-jailbroken comparison proposed in
+supervisor meeting feedback (cf. Alessandro 2026-06-19):
 
 1. a graph has already been constructed and pruned in one model (a human
    selected the important nodes interactively in the supernode graph editor,
@@ -39,6 +39,7 @@ FEATURE_TYPE = "cross layer transcoder"
 
 
 def setup_logging() -> None:
+    """Configure root logging to stream INFO-and-above to stdout with timestamps."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-8s %(name)s | %(message)s",
@@ -76,6 +77,7 @@ def panel_row_from_node(
     label: str,
     category: str,
 ) -> dict[str, Any]:
+    """Build one feature-panel row from a graph node, its resolved label, and its group category."""
     ctx_idx = node["ctx_idx"]
     prompt_token = prompt_tokens[ctx_idx] if 0 <= ctx_idx < len(prompt_tokens) else None
     return {
@@ -91,6 +93,11 @@ def panel_row_from_node(
 def build_panel(
     graph: dict[str, Any], *, direction: str, all_feature_nodes: bool = False
 ) -> dict[str, Any]:
+    """Build a feature panel from either the graph's pinned nodes or all its feature nodes.
+
+    Raises ``ValueError`` if no ``"cross layer transcoder"`` nodes are found
+    among the candidates.
+    """
     metadata = graph["metadata"]
     q_params = graph.get("qParams", {})
     pinned_ids = [node_id for node_id in q_params.get("pinnedIds", "").split(",") if node_id]
@@ -163,6 +170,7 @@ def build_panel(
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for building a feature panel from a graph JSON."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "graph",
@@ -187,6 +195,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """CLI entry point: build a feature panel from a graph JSON and write it as JSON."""
     setup_logging()
     args = parse_args()
     with args.graph.open("r", encoding="utf-8") as handle:
