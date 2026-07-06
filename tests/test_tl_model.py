@@ -1,8 +1,8 @@
 """Chunk 2 acceptance test: real Qwen3-4B load + Dallas forward parity.
 
 This test downloads / loads Qwen3-4B (~8 GB on disk, ~16 GB resident in fp32) and
-is therefore slow. It is gated behind ``SKIP_SLOW_TESTS`` so CI / quick runs
-skip it by default.
+is therefore slow. It is skipped by default; set
+``LLM_BIOLOGY_RUN_SLOW_TESTS=1`` to run it in a prepared environment.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import os
 import time
 import unittest
 
+import pytest
 import torch
 
 from llm_biology.model.tl_model import load_replacement_model
@@ -18,11 +19,14 @@ from llm_biology.model.tl_model import load_replacement_model
 DALLAS_PROMPT = "Fact: the capital of the state containing Dallas is"
 EXPECTED_TOKEN = " Austin"
 MIN_PROB = 0.92
+RUN_SLOW_TESTS = os.getenv("LLM_BIOLOGY_RUN_SLOW_TESTS") == "1"
+
+pytestmark = [pytest.mark.slow, pytest.mark.network]
 
 
-@unittest.skipIf(
-    os.getenv("SKIP_SLOW_TESTS"),
-    "slow test gated by SKIP_SLOW_TESTS",
+@unittest.skipUnless(
+    RUN_SLOW_TESTS,
+    "set LLM_BIOLOGY_RUN_SLOW_TESTS=1 to run the slow real-model test",
 )
 class TestTLModelDallas(unittest.TestCase):
     def test_dallas_forward_parity(self):

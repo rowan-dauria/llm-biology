@@ -65,18 +65,25 @@ Former wrapper: `scripts/evaluation/run_tests.wilkes3`
 
 - Job: `llm_bio_tests`
 - Time: `01:00:00`
-- Old env default: `PYTEST_ARGS="tests -q"`
+- Default pytest skips slow/network/GPU tests.
 
 ```bash
 sbatch -J llm_bio_tests -t 01:00:00 slurm/run_gpu.wilkes3 \
-  python -m pytest tests -q
+  python -m pytest
+```
+
+Full marked run on CSD3:
+
+```bash
+sbatch -J llm_bio_tests -t 01:00:00 slurm/run_gpu.wilkes3 \
+  bash -lc 'LLM_BIOLOGY_RUN_SLOW_TESTS=1 python -m pytest -m "slow or gpu or network or csd3" tests'
 ```
 
 Narrow test run:
 
 ```bash
 sbatch -J llm_bio_tests -t 01:00:00 slurm/run_gpu.wilkes3 \
-  python -m pytest tests/test_biology_server.py -q
+  python -m pytest tests/test_biology_server.py
 ```
 
 ## Interventions

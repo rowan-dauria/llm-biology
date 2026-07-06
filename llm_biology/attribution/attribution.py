@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTranscoder
+from circuit_tracer.transcoder.single_layer_transcoder import SingleLayerTranscoder, load_transcoder
 from huggingface_hub import snapshot_download
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
@@ -36,7 +36,6 @@ from llm_biology.attribution.circuit_graph_export import (
     make_feature_example_payload,
     paired_feature_index,
 )
-from llm_biology.compat import load_transcoder
 from llm_biology.features.labels import FeatureLabelMap, get_feature_label, load_feature_labels
 from llm_biology.features.windows import active_prompt_ids, collect_prompt_texts, get_windows
 from llm_biology.memory_profile import (
@@ -265,7 +264,7 @@ def load_transcoders(
     Resolves cached/downloaded ``layer_<L>.safetensors`` files from the
     ``mwhanna/qwen3-4b-transcoders`` Hugging Face repo via
     :func:`huggingface_hub.snapshot_download`, then constructs each transcoder
-    with circuit-tracer's :func:`~llm_biology.compat.load_transcoder` factory
+    with circuit-tracer's ``load_transcoder`` factory
     (the only circuit-tracer API this project uses for transcoders).
     """
     wanted_files = [f"layer_{layer}.safetensors" for layer in layers]

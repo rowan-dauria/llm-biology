@@ -24,24 +24,26 @@ pruning, interventions, labels, and exports are project code.
 - `llm_biology/viewer/`: viz-only Neuronpedia-compatible local graph viewer.
 - `slurm/run_gpu.wilkes3`: generic CSD3 GPU launcher.
 - `EXPERIMENTS.md`: exact replacements for the retired experiment wrappers.
-- `data/neuronpedia-schemas/`: canonical frontend export schemas; do not edit
-  them to fit new output.
 
 Report-figure plotting and table-generation scripts are not part of this
 submission codebase; they live in the parent project at `scripts/figures/`
 (outside this repo) and read the JSON/CSV files this package writes.
+Generated graph, feature, and fidelity data are not versioned in this repo.
 
 ## Environment
 
-On CSD3, use the existing `qwen-sae` conda environment. It intentionally carries
-the newer `transformers` / `huggingface_hub` pair needed by the Gemma labeller;
-do not reinstall `circuit-tracer` or `transformer-lens` in that env just to
-satisfy metadata constraints.
-
-Install this package into that existing env without dependency resolution:
+On CSD3, create a clean environment from the minimal CUDA/PyTorch base:
 
 ```bash
-uv pip install -e . --no-deps
+conda env create -f environment.yml
+conda activate qwen-sae
+```
+
+Install the package normally so dependency conflicts surface immediately:
+
+```bash
+python -m pip install -e ".[dev,api-labels,profiling]"
+python -m pip check
 ```
 
 For local linting/dev hooks only:
@@ -141,34 +143,40 @@ including refusal runs and cross-model comparison defaults.
 
 ## Tests
 
-Do not run the full test suite on a laptop; several tests can load sizeable
-models. On CSD3:
+The default pytest command skips large-model/network/GPU tests:
+
+```bash
+python -m pytest
+```
+
+Run the real Qwen3 Dallas acceptance test only in an environment with the model
+cache and enough memory:
+
+```bash
+LLM_BIOLOGY_RUN_SLOW_TESTS=1 python -m pytest \
+  -m "slow and network" tests/test_tl_model.py
+```
+
+On CSD3, run the full marked suite through SLURM:
 
 ```bash
 sbatch -J llm_bio_tests -t 01:00:00 slurm/run_gpu.wilkes3 \
-  python -m pytest tests -q
-```
-
-For a CPU-safe local subset:
-
-```bash
-python -m pytest \
-  tests/test_labels.py \
-  tests/test_graph_targets.py \
-  tests/test_patch_graph_labels.py \
-  tests/test_circuit_graph_export.py \
-  tests/test_biology_server.py \
-  -q
+  bash -lc 'LLM_BIOLOGY_RUN_SLOW_TESTS=1 python -m pytest -m "slow or gpu or network or csd3" tests'
 ```
 
 ## Heretic Refusal Runs
 
-The Heretic (abliteration) changes are kept as a companion fork rather than
-vendored here: [`rowan-dauria/heretic`](https://github.com/rowan-dauria/heretic)
-(package `heretic-llm`), branch `codex/heretic-touched-layers`, pinned at
-commit `de4de5d` — install with the optional `heretic` dependency group
-(`pip install ".[heretic]"`). The methodologically important change on that
-fork excludes the tracked transcoder MLP layers
+The Heretic (abliteration) changes are kept in the companion fork
+[`rowan-dauria/heretic`](https://github.com/rowan-dauria/heretic), branch
+`codex/heretic-touched-layers`, pinned at commit `de4de5d`. That fork has its
+own `transformers`/`huggingface-hub` requirements, so run it in its own
+environment and export the merged comparison model before using this repo's
+feature-comparison tools. It is intentionally not vendored here and not an
+optional dependency of `llm-biology`, matching the submission plan of
+referencing the fork at a pinned commit.
+
+The methodologically important change on that fork excludes the tracked
+transcoder MLP layers
 (`HERETIC_EXCLUDED_MLP_ABLITERATION_LAYERS="2,12,24,33"`) from abliteration,
 so the same transcoder basis stays valid on the abliterated model. The
 reported results use Optuna trial `113` (KL divergence `0.081`, `3/100`

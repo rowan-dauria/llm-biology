@@ -592,13 +592,18 @@ class run_test_server:
             asset_path = frontend_dir / rel_path
             asset_path.parent.mkdir(parents=True, exist_ok=True)
             asset_path.write_text(content, encoding="utf-8")
-        self.server = serve(
-            graph_file_dir=self.graph_dir,
-            frontend_dir=frontend_dir,
-            static_dir=static_dir,
-            port=0,
-            host="127.0.0.1",
-        )
+        try:
+            self.server = serve(
+                graph_file_dir=self.graph_dir,
+                frontend_dir=frontend_dir,
+                static_dir=static_dir,
+                port=0,
+                host="127.0.0.1",
+            )
+        except PermissionError as exc:
+            self.tempdir.cleanup()
+            self.tempdir = None
+            raise unittest.SkipTest(f"local socket bind unavailable: {exc}") from exc
         return HttpTestClient(self.server.httpd.server_address[1], self.graph_dir)
 
     def __exit__(self, *_: object) -> None:

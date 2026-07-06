@@ -5,18 +5,18 @@ description = "Custom TransformerLens circuit tracing pipeline for Qwen3-4B biol
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "accelerate",
-    "circuit-tracer",
-    "datasets",
-    "fsspec",
-    "huggingface-hub",
-    "numpy",
-    "safetensors",
-    "torch",
-    "tqdm",
-    "transformer-lens",
-    "transformers",
-    "zstandard",
+    "accelerate>=1.12,<2",
+    "circuit-tracer==0.4.1",
+    "datasets>=4.4,<5",
+    "fsspec>=2025.10",
+    "huggingface-hub>=0.34,<1",
+    "numpy>=1.26,<3",
+    "safetensors>=0.7,<0.8",
+    "torch>=2.5,<3",
+    "tqdm>=4.67,<5",
+    "transformer-lens>=3.2,<3.3",
+    "transformers>=4.56,<=4.57.3",
+    "zstandard>=0.23,<1",
 ]
 
 [project.optional-dependencies]
@@ -24,17 +24,14 @@ api-labels = [
     "anthropic",
     "openai",
 ]
-heretic = [
-    "heretic-llm @ git+https://github.com/rowan-dauria/heretic.git@de4de5d",
-]
 dev = [
-    "pre-commit",
-    "pyright[nodejs]",
-    "pytest",
-    "ruff",
+    "pre-commit>=4.5,<5",
+    "pyright[nodejs]>=1.1.408,<1.2",
+    "pytest>=9,<10",
+    "ruff>=0.15,<0.16",
 ]
 profiling = [
-    "memory-profiler",
+    "memory-profiler>=0.61,<1",
 ]
 
 [project.scripts]
@@ -74,6 +71,22 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "notebooks/*.ipynb" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = [
+    "tests",
+]
+addopts = [
+    "-q",
+    "-m",
+    "not slow and not gpu and not network",
+]
+markers = [
+    "slow: tests that load large models or run for minutes",
+    "gpu: tests that need a CUDA GPU",
+    "network: tests that may download from external services",
+    "csd3: tests intended for the CSD3/Wilkes3 environment",
+]
 
 [tool.pyright]
 pythonVersion = "3.12"
