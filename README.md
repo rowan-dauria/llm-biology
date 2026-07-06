@@ -21,13 +21,15 @@ pruning, interventions, labels, and exports are project code.
 - `llm_biology/evaluation/`: replacement-fidelity (KL / delta-CE) measurement.
 - `llm_biology/refusal/`: base-vs-Heretic feature panel and cross-model
   activation comparison tools.
-- `llm_biology/figures/`: plotting and table-generation helpers for saved JSON/CSV
-  outputs.
 - `llm_biology/viewer/`: viz-only Neuronpedia-compatible local graph viewer.
 - `slurm/run_gpu.wilkes3`: generic CSD3 GPU launcher.
 - `EXPERIMENTS.md`: exact replacements for the retired experiment wrappers.
 - `data/neuronpedia-schemas/`: canonical frontend export schemas; do not edit
   them to fit new output.
+
+Report-figure plotting and table-generation scripts are not part of this
+submission codebase; they live in the parent project at `scripts/figures/`
+(outside this repo) and read the JSON/CSV files this package writes.
 
 ## Environment
 
@@ -106,14 +108,16 @@ python -m llm_biology.refusal.build_feature_panel_from_graph <graph.json> --dire
 python -m llm_biology.refusal.compare_cross_model_feature_activations panel.json --comparison-model-id Qwen/Qwen3-4B
 ```
 
-Plot helpers consume the JSON/CSV files written by the analyses above:
+Plot helpers consume the JSON/CSV files written by the analyses above. They
+live outside this repo, in the parent project's `scripts/figures/` (run from
+the parent project root):
 
 ```bash
-python -m llm_biology.figures.plot_odds_vs_steering <baseline.json> <sweep.json>
-python -m llm_biology.figures.plot_steering_top_logits <sweep.json>
-python -m llm_biology.figures.plot_intervention_comparison <sweep-a.json> <sweep-b.json> --output out.png
-python -m llm_biology.figures.plot_cross_model_feature_fate <forward.csv> <reverse.csv>
-python -m llm_biology.figures.plot_cross_model_feature_fate_unsupervised <forward.csv> <reverse.csv>
+python scripts/figures/plot_odds_vs_steering.py <baseline.json> <sweep.json>
+python scripts/figures/plot_steering_top_logits.py <sweep.json>
+python scripts/figures/plot_intervention_comparison.py <sweep-a.json> <sweep-b.json> --output out.png
+python scripts/figures/plot_cross_model_feature_fate.py <forward.csv> <reverse.csv>
+python scripts/figures/plot_cross_model_feature_fate_unsupervised.py <forward.csv> <reverse.csv>
 ```
 
 The first three read the `.json` files from `sweep`/`bootstrap_random_supernode_baseline`;

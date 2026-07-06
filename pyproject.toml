@@ -10,7 +10,6 @@ dependencies = [
     "datasets",
     "fsspec",
     "huggingface-hub",
-    "matplotlib",
     "numpy",
     "safetensors",
     "torch",
