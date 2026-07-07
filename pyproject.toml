@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "accelerate>=1.12,<2",
-    "circuit-tracer==0.4.1",
+    "circuit-tracer @ git+https://github.com/rowan-dauria/circuit-tracer.git@4b1b491287c4a9328c733bea629f915874b967c6",
     "datasets>=4.4,<5",
     "fsspec>=2025.10",
     "huggingface-hub>=0.34,<1",
