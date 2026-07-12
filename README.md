@@ -181,3 +181,10 @@ transcoder MLP layers
 so the same transcoder basis stays valid on the abliterated model. The
 reported results use Optuna trial `113` (KL divergence `0.081`, `3/100`
 refusals vs. `97/100` base-model refusals).
+
+## AI Declaration
+
+Generative AI and auto-generation tools were used during the development of this repository to assist with coding, debugging, and software orchestration. Specifically, Claude Code (Anthropic), Codex (OpenAI), and Antigravity (Google) were employed as software development assistants.
+
+All code, analyses, and structure were reviewed, verified, and finalized by the author, who retains full responsibility for the originality, accuracy, and integrity of the final submission.
+
