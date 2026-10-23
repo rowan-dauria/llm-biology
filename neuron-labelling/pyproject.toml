@@ -1,0 +1,33 @@
+[project]
+name = "neuron-labelling"
+version = "0.1.0"
+description = "Feasibility study: agentic labelling of individual Qwen3 MLP neurons."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=1.26,<3",
+    "torch>=2.5,<3",
+    "tqdm>=4.67,<5",
+    "transformers>=4.56,<=4.57.3",
+]
+
+[project.optional-dependencies]
+hf-corpus = [
+    "datasets>=4.4,<5",
+]
+dev = [
+    "pytest>=9,<10",
+]
+
+[tool.setuptools.packages.find]
+include = [
+    "neuron_labelling*",
+]
+
+[tool.pytest.ini_options]
+testpaths = [
+    "tests",
+]
+addopts = [
+    "-q",
+]
